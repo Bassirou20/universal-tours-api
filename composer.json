@@ -6,7 +6,8 @@
     "laravel/framework": "^10.0",
     "laravel/sanctum": "^3.3",
     "maatwebsite/excel": "^3.1",
-    "barryvdh/laravel-dompdf": "^3.1"
+    "barryvdh/laravel-dompdf": "^3.1",
+    "phpoffice/phpspreadsheet": "^1.30"
   },
   "autoload": {
     "psr-4": {

@@ -45,6 +45,7 @@ class Reservation extends Model
         'reference',
         'statut',
         'nombre_personnes',
+        'passenger_id',
 
         // Montants (sans devise)
         'montant_sous_total',
@@ -105,7 +106,7 @@ class Reservation extends Model
 
         $r->saveQuietly();
     });
-}
+}   
 
     /* Helpers */
     public function isBilletAvion(): bool
@@ -145,6 +146,12 @@ class Reservation extends Model
     {
         return $this->hasMany(\App\Models\Participant::class);
     }
+
+    public function passenger(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\Participant::class, 'passenger_id');
+    }
+
 
     public function factures(): HasMany
     {

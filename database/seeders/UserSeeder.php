@@ -18,6 +18,6 @@ class UserSeeder extends Seeder
         'prenom' => 'Admin',  
         'email' => 'admin@universal-tours.com',
         'password' => bcrypt('password'),
-    ])->assignRole('admin'); 
+        ])->assignRole('admin'); 
     }
 }

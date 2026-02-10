@@ -129,7 +129,7 @@
         <thead>
             <tr>
                 {{-- ✅ Ici: # = Référence réservation --}}
-                <th style="width:18%">#</th>
+                <th style="width:18%">Référence</th>
                 <th>Description</th>
                 <th style="width:15%">PU HT</th>
                 <th style="width:10%">Qté</th>

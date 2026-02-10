@@ -8,12 +8,15 @@ use App\Http\Requests\UpdateReservationRequest;
 use App\Models\Client;
 use App\Models\Facture;
 use App\Models\Forfait;
+use App\Models\Participant;
 use App\Models\Reservation;
 use App\Models\Produit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Str;
+
 
 class ReservationController extends Controller
 {
@@ -24,6 +27,7 @@ class ReservationController extends Controller
 {
     $q = Reservation::with([
         'client',
+        'passenger',
         'produit',
         'forfait',
         'participants',
@@ -50,156 +54,134 @@ class ReservationController extends Controller
      * Création d'une réservation
      */
  public function store(StoreReservationRequest $request)
-    {
-        $data = $request->validated();
+{
+    $data = $request->validated();
 
-        return DB::transaction(function () use ($data) {
+    return DB::transaction(function () use ($data) {
 
-            /* -------------------------------------------------
-            | 1) CLIENT (existant ou nouveau)
-            |-------------------------------------------------*/
-            if (!empty($data['client_id'])) {
-                $client = Client::findOrFail($data['client_id']);
-            } elseif (!empty($data['client'])) {
-                // Evite les doublons si email fourni
-                if (!empty($data['client']['email'])) {
-                    $client = Client::firstOrCreate(
-                        ['email' => $data['client']['email']],
-                        $data['client']
-                    );
-                } else {
-                    $client = Client::create($data['client']);
-                }
+        /* -------------------------------------------------
+        | 1) CLIENT (existant ou nouveau)
+        |-------------------------------------------------*/
+        if (!empty($data['client_id'])) {
+            $client = Client::findOrFail($data['client_id']);
+        } elseif (!empty($data['client'])) {
+            // Evite les doublons si email fourni
+            if (!empty($data['client']['email'])) {
+                $client = Client::firstOrCreate(
+                    ['email' => $data['client']['email']],
+                    $data['client']
+                );
             } else {
-                return response()->json([
-                    'message' => 'Client requis (client_id ou client).',
-                    'errors' => ['client' => ['Client requis (client_id ou client).']]
-                ], 422);
+                $client = Client::create($data['client']);
             }
+        } else {
+            return response()->json([
+                'message' => 'Client requis (client_id ou client).',
+                'errors' => ['client' => ['Client requis (client_id ou client).']]
+            ], 422);
+        }
 
-            /* -------------------------------------------------
-            | 2) COMMUN
-            |-------------------------------------------------*/
-            $reference = uniqid('RES-');
-            $type = $data['type'];
+        /* -------------------------------------------------
+        | 2) COMMUN
+        |-------------------------------------------------*/
+        
+        $type = $data['type'];
+        $reference = $this->makeReservationReference($data, $type);
 
-            // sécurité voiture
-            $nombrePersonnes = (int) ($data['nombre_personnes'] ?? 1);
-            if ($type === Reservation::TYPE_VOITURE) $nombrePersonnes = 1;
+        // sécurité voiture
+        $nombrePersonnes = (int) ($data['nombre_personnes'] ?? 1);
+        if ($type === Reservation::TYPE_VOITURE) $nombrePersonnes = 1;
 
-            // montants: on privilégie le total calculé / envoyé
-            $montantSousTotal = (float) ($data['montant_sous_total'] ?? $data['montant_total'] ?? 0);
-            $montantTaxes     = (float) ($data['montant_taxes'] ?? 0);
-            $montantTotal     = (float) ($data['montant_total'] ?? ($montantSousTotal + $montantTaxes));
+        // montants: on privilégie le total calculé / envoyé
+        $montantSousTotal = (float) ($data['montant_sous_total'] ?? $data['montant_total'] ?? 0);
+        $montantTaxes     = (float) ($data['montant_taxes'] ?? 0);
+        $montantTotal     = (float) ($data['montant_total'] ?? ($montantSousTotal + $montantTaxes));
 
-            $participants = $data['participants'] ?? [];
+        $participants = $data['participants'] ?? [];
 
-            // ✅ Tu veux confirmé par défaut
-            $statut = Reservation::STATUT_CONFIRME;
+        // ✅ Tu veux confirmé par défaut
+        $statut = Reservation::STATUT_CONFIRME;
 
-            /* -------------------------------------------------
-            | 3) Création selon type
-            |-------------------------------------------------*/
+        /* -------------------------------------------------
+        | 3) Création selon type
+        |-------------------------------------------------*/
 
-            // A) BILLET AVION
-            if ($type === Reservation::TYPE_BILLET_AVION) {
+        // A) BILLET AVION (1 réservation = 1 passager)
+        // A) BILLET AVION (1 réservation = 1 passager)
+        if ($type === Reservation::TYPE_BILLET_AVION) {
 
-                $reservation = Reservation::create([
-                    'client_id' => $client->id,
-                    'type' => Reservation::TYPE_BILLET_AVION,
-                    'produit_id' => null,
-                    'forfait_id' => null,
-                    'reference' => $reference,
-                    'statut' => $statut,
+            // 1️⃣ Créer la réservation SANS passenger_id
+            $reservation = Reservation::create([
+                'client_id' => $client->id,
+                'type' => Reservation::TYPE_BILLET_AVION,
+                'reference' => $reference,
+                'statut' => $statut,
+                'nombre_personnes' => 1,
+                'montant_sous_total' => $montantSousTotal,
+                'montant_taxes' => $montantTaxes,
+                'montant_total' => $montantTotal,
+                'notes' => $data['notes'] ?? null,
+            ]);
 
-                    'nombre_personnes' => $nombrePersonnes,
-                    'montant_sous_total' => $montantSousTotal,
-                    'montant_taxes' => $montantTaxes,
-                    'montant_total' => $montantTotal,
+            // 2️⃣ Déterminer le passager
+            if (!empty($data['passenger_id'])) {
 
-                    'notes' => $data['notes'] ?? null,
+                $passenger = Participant::where('id', $data['passenger_id'])
+                    ->where('reservation_id', $reservation->id)
+                    ->firstOrFail();
+
+            } elseif (!empty($data['passenger'])) {
+
+                $passenger = $reservation->participants()->create([
+                    ...$data['passenger'],
+                    'role' => 'passenger',
                 ]);
 
-                $fd = $data['flight_details'];
-
-                $reservation->flightDetails()->create([
-                    'ville_depart' => $fd['ville_depart'],
-                    'ville_arrivee' => $fd['ville_arrivee'],
-                    'date_depart' => $fd['date_depart'],
-                    'date_arrivee' => $fd['date_arrivee'] ?? null,
-                    'compagnie' => $fd['compagnie'] ?? null,
-                    'pnr' => $fd['pnr'] ?? null,
-                    'classe' => $fd['classe'] ?? null,
+            } else {
+                // client = passager
+                $passenger = $reservation->participants()->create([
+                    'nom' => $client->nom,
+                    'prenom' => $client->prenom,
+                    'role' => 'passenger',
                 ]);
-
-                foreach ($participants as $p) {
-                    $reservation->participants()->create($p);
-                }
-
-                // ✅ Facture auto pour réservation confirmée
-                $this->ensureFactureEmise($reservation);
-                $facture = $this->ensureFactureEmise($reservation);
-
-
-                return response()->json(
-                    $reservation->load(['client', 'flightDetails', 'participants', 'factures.paiements']),
-                    Response::HTTP_CREATED
-                );
             }
 
-            // B) FORFAIT
-            if ($type === Reservation::TYPE_FORFAIT) {
+            // 3️⃣ Lier le passager à la réservation
+            $reservation->update([
+                'passenger_id' => $passenger->id
+            ]);
 
-                $forfait = Forfait::findOrFail($data['forfait_id']);
+            // 4️⃣ Flight details
+            $reservation->flightDetails()->create($data['flight_details']);
 
-                $reservation = Reservation::create([
-                    'client_id' => $client->id,
-                    'type' => Reservation::TYPE_FORFAIT,
+            // 5️⃣ Facture
+            $this->ensureFactureEmise($reservation);
 
-                    'produit_id' => null,
-                    'forfait_id' => $forfait->id,
-
-                    'reference' => $reference,
-                    'statut' => $statut,
-
-                    'nombre_personnes' => $nombrePersonnes,
-                    'montant_sous_total' => $montantSousTotal,
-                    'montant_taxes' => $montantTaxes,
-                    'montant_total' => $montantTotal,
-
-                    'notes' => $data['notes'] ?? null,
-                ]);
-
-                foreach ($participants as $p) {
-                    $reservation->participants()->create($p);
-                }
-
-                // ✅ Facture auto
-                $this->ensureFactureEmise($reservation);
-                $facture = $this->ensureFactureEmise($reservation);
+            return response()->json(
+                $reservation->load([
+                    'client',
+                    'passenger',
+                    'flightDetails',
+                    'factures.paiements'
+                ]),
+                Response::HTTP_CREATED
+            );
+        }
 
 
-                return response()->json(
-                    $reservation->load(['client', 'forfait', 'participants', 'factures.paiements']),
-                    Response::HTTP_CREATED
-                );
-            }
 
-            // C) AUTRES TYPES (hotel/voiture/evenement)
-            $produit = Produit::findOrFail($data['produit_id']);
 
-            if ($produit->type !== $type) {
-                return response()->json([
-                    'message' => "Le produit sélectionné ne correspond pas au type de réservation ({$type}).",
-                    'errors' => ['produit_id' => ["Le produit sélectionné ne correspond pas au type de réservation ({$type})."]]
-                ], 422);
-            }
+        // B) FORFAIT
+        if ($type === Reservation::TYPE_FORFAIT) {
+
+            $forfait = Forfait::findOrFail($data['forfait_id']);
 
             $reservation = Reservation::create([
                 'client_id' => $client->id,
-                'type' => $type,
-                'produit_id' => $produit->id,
-                'forfait_id' => $data['forfait_id'] ?? null,
+                'type' => Reservation::TYPE_FORFAIT,
+
+                'produit_id' => null,
+                'forfait_id' => $forfait->id,
 
                 'reference' => $reference,
                 'statut' => $statut,
@@ -210,27 +192,65 @@ class ReservationController extends Controller
                 'montant_total' => $montantTotal,
 
                 'notes' => $data['notes'] ?? null,
-                
             ]);
 
-            // Participants seulement si evenement (selon ta règle)
-            if ($type === Reservation::TYPE_EVENEMENT) {
-                foreach ($participants as $p) {
-                    $reservation->participants()->create($p);
-                }
+            foreach ($participants as $p) {
+                $reservation->participants()->create($p);
             }
 
-            // ✅ Facture auto
+            // ✅ Facture auto (1 seule fois)
             $this->ensureFactureEmise($reservation);
-            $facture = $this->ensureFactureEmise($reservation);
-
 
             return response()->json(
-                $reservation->load(['client', 'produit', 'forfait', 'participants', 'factures.paiements']),
+                $reservation->load(['client', 'forfait', 'participants', 'factures.paiements']),
                 Response::HTTP_CREATED
             );
-        });
-    }
+        }
+
+        // C) AUTRES TYPES (hotel/voiture/evenement)
+        $produit = Produit::findOrFail($data['produit_id']);
+
+        if ($produit->type !== $type) {
+            return response()->json([
+                'message' => "Le produit sélectionné ne correspond pas au type de réservation ({$type}).",
+                'errors' => ['produit_id' => ["Le produit sélectionné ne correspond pas au type de réservation ({$type})."]]
+            ], 422);
+        }
+
+        $reservation = Reservation::create([
+            'client_id' => $client->id,
+            'type' => $type,
+            'produit_id' => $produit->id,
+            'forfait_id' => $data['forfait_id'] ?? null,
+
+            'reference' => $reference,
+            'statut' => $statut,
+
+            'nombre_personnes' => $nombrePersonnes,
+            'montant_sous_total' => $montantSousTotal,
+            'montant_taxes' => $montantTaxes,
+            'montant_total' => $montantTotal,
+
+            'notes' => $data['notes'] ?? null,
+        ]);
+
+        // Participants seulement si evenement (selon ta règle)
+        if ($type === Reservation::TYPE_EVENEMENT) {
+            foreach ($participants as $p) {
+                $reservation->participants()->create($p);
+            }
+        }
+
+        // ✅ Facture auto (1 seule fois)
+        $this->ensureFactureEmise($reservation);
+
+        return response()->json(
+            $reservation->load(['client', 'produit', 'forfait', 'participants', 'factures.paiements']),
+            Response::HTTP_CREATED
+        );
+    });
+}
+
 
 
 
@@ -241,6 +261,7 @@ class ReservationController extends Controller
 {
     return $reservation->load([
         'client',
+        'passenger',
         'produit',
         'forfait',
         'participants',
@@ -315,6 +336,54 @@ class ReservationController extends Controller
     });
 }
 
+private function makeReservationReference(array $data, string $type): string
+{
+    // 1) Si une référence est fournie (import Excel), on la respecte
+    $incoming = trim((string)($data['reference'] ?? ''));
+    if ($incoming !== '') {
+        return $this->ensureUniqueReference($incoming);
+    }
+
+    // 2) Billet avion : priorité au PNR s'il existe
+    if ($type === \App\Models\Reservation::TYPE_BILLET_AVION) {
+        $pnr = trim((string)($data['flight_details']['pnr'] ?? ''));
+        if ($pnr !== '') {
+            return $this->ensureUniqueReference(Str::upper($pnr));
+        }
+
+        // Sinon génération "pro"
+        $date = now()->format('Ymd');
+        $rand = Str::upper(Str::random(6));
+        return $this->ensureUniqueReference("UT-AV-{$date}-{$rand}");
+    }
+
+    // 3) Autres types
+    $date = now()->format('Ymd');
+    $typeCode = match ($type) {
+        \App\Models\Reservation::TYPE_HOTEL => 'HOT',
+        \App\Models\Reservation::TYPE_VOITURE => 'CAR',
+        \App\Models\Reservation::TYPE_EVENEMENT => 'EVT',
+        \App\Models\Reservation::TYPE_FORFAIT => 'PKG',
+        default => 'RES',
+    };
+
+    $rand = Str::upper(Str::random(6));
+    return $this->ensureUniqueReference("UT-{$typeCode}-{$date}-{$rand}");
+}
+
+private function ensureUniqueReference(string $ref): string
+{
+    $ref = trim($ref);
+    $base = $ref;
+
+    $i = 2;
+    while (\App\Models\Reservation::where('reference', $ref)->exists()) {
+        $ref = $base . '-' . $i;
+        $i++;
+    }
+
+    return $ref;
+}
 
     public function annuler(Request $request, Reservation $reservation)
 {
