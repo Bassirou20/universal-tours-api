@@ -26,7 +26,7 @@ class ClientController extends Controller
                   ->orWhere('telephone','like',"%$s%" );
             });
         }
-        return $q->orderBy('nom')->paginate(20);
+        return $q->orderBy('nom')->paginate(10);
     }
 
     public function store(StoreClientRequest $request)
