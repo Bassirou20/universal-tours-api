@@ -25,48 +25,33 @@ class ReservationController extends Controller
      */
     public function index(Request $request)
 {
-    $query = Reservation::query();
+    $perPage = (int) ($request->get('per_page', 10));
 
-    // filtres optionnels
-    if ($request->filled('type')) {
-        $query->where('type', $request->string('type'));
-    }
-    if ($request->filled('statut')) {
-        $query->where('statut', $request->string('statut'));
-    }
-    if ($request->filled('client_id')) {
-        $query->where('client_id', (int) $request->input('client_id'));
-    }
-    if ($request->filled('q')) {
-        $q = trim((string) $request->input('q'));
-        $query->where(function ($sub) use ($q) {
-            $sub->where('reference', 'like', "%{$q}%")
-                ->orWhereHas('client', function ($qc) use ($q) {
-                    $qc->withTrashed()
-                       ->where('nom', 'like', "%{$q}%")
-                       ->orWhere('prenom', 'like', "%{$q}%");
-                });
-        });
-    }
-
-    $perPage = (int) ($request->input('per_page', 10));
-
-    $reservations = $query
-        ->latest()
+    $query = Reservation::query()
         ->with([
-            // IMPORTANT: client soft-deleted visible
+            // ✅ inclure même les clients soft-deleted
             'client' => fn ($q) => $q->withTrashed(),
+
             'produit',
             'forfait',
             'participants',
-            'passenger',
-            'flightDetails',
+            'passenger',        // ✅
+            'flightDetails',    // ✅
             'factures.paiements',
         ])
-        ->paginate($perPage);
+        ->orderByDesc('created_at');
 
-    return response()->json($reservations);
+    // (optionnel) filtres si tu en as
+    if ($request->filled('type')) {
+        $query->where('type', $request->get('type'));
+    }
+    if ($request->filled('statut')) {
+        $query->where('statut', $request->get('statut'));
+    }
+
+    return response()->json($query->paginate($perPage));
 }
+
 
     /**
      * Création d'une réservation
