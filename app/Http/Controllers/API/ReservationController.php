@@ -25,30 +25,48 @@ class ReservationController extends Controller
      */
     public function index(Request $request)
 {
-    $q = Reservation::with([
-        'client',
-        'passenger',
-        'produit',
-        'forfait',
-        'participants',
-        'factures.paiements', // ✅ IMPORTANT
-    ]);
+    $query = Reservation::query();
 
-    if ($request->filled('client_id')) {
-        $q->where('client_id', $request->client_id);
-    }
-
-    if ($request->filled('statut')) {
-        $q->where('statut', $request->statut);
-    }
-
+    // filtres optionnels
     if ($request->filled('type')) {
-        $q->where('type', $request->type);
+        $query->where('type', $request->string('type'));
+    }
+    if ($request->filled('statut')) {
+        $query->where('statut', $request->string('statut'));
+    }
+    if ($request->filled('client_id')) {
+        $query->where('client_id', (int) $request->input('client_id'));
+    }
+    if ($request->filled('q')) {
+        $q = trim((string) $request->input('q'));
+        $query->where(function ($sub) use ($q) {
+            $sub->where('reference', 'like', "%{$q}%")
+                ->orWhereHas('client', function ($qc) use ($q) {
+                    $qc->withTrashed()
+                       ->where('nom', 'like', "%{$q}%")
+                       ->orWhere('prenom', 'like', "%{$q}%");
+                });
+        });
     }
 
-    return $q->latest()->paginate(10);
-}
+    $perPage = (int) ($request->input('per_page', 10));
 
+    $reservations = $query
+        ->latest()
+        ->with([
+            // IMPORTANT: client soft-deleted visible
+            'client' => fn ($q) => $q->withTrashed(),
+            'produit',
+            'forfait',
+            'participants',
+            'passenger',
+            'flightDetails',
+            'factures.paiements',
+        ])
+        ->paginate($perPage);
+
+    return response()->json($reservations);
+}
 
     /**
      * Création d'une réservation
@@ -257,17 +275,19 @@ class ReservationController extends Controller
     /**
      * Détails d'une réservation
      */
-    public function show(Reservation $reservation)
+   public function show($id)
 {
-    return $reservation->load([
-        'client',
-        'passenger',
+    $reservation = Reservation::with([
+        'client' => fn ($q) => $q->withTrashed(),
         'produit',
         'forfait',
         'participants',
-        'flightDetails',        // utile pour billet_avion
-        'factures.paiements',   // ✅ indispensable pour acompte/partiel/payé
-    ]);
+        'passenger',
+        'flightDetails',
+        'factures.paiements',
+    ])->findOrFail($id);
+
+    return response()->json($reservation);
 }
 
 
