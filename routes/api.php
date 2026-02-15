@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\ClientController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\API\DepenseController;
 use App\Http\Controllers\API\ProduitController;
 use App\Http\Controllers\API\ReservationController;
@@ -66,8 +67,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 
     // Paiements (création rattachée facture)
+    Route::get('dashboard', [DashboardController::class, 'index']);
     Route::post('factures/{facture}/paiements', [PaiementController::class, 'store']);
-
 
     // =========================
     // Admin only
