@@ -3,7 +3,6 @@
 namespace App\Console\Commands;
 
 use App\Models\Client;
-use App\Models\Participant;
 use App\Models\Reservation;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -11,17 +10,27 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ImportReservationsJanvier extends Command
 {
-    protected $signature = 'reservations:import-janvier {path : Chemin du fichier xlsx (ex: storage/app/imports/ETATJANVIER26.xlsx)} {--dry-run : Ne rien écrire en base, afficher seulement}';
-    protected $description = 'Import des réservations (billets avion) depuis ETAT JANVIER 26.xlsx';
+    protected $signature = 'reservations:import-janvier
+        {path : Chemin du fichier xlsx (ex: storage/app/imports/ETATUTJANVIER2026.xlsx)}
+        {--dry-run : Ne rien écrire en base, afficher seulement}
+        {--source=ETATUTJANVIER2026 : Nom source import (ex: ETATJANVIER26, ETATUTJANVIER2026)}
+        {--year=2026 : Année fallback si date type 13/1}
+        {--month=1 : Mois fallback si date type 13/1}';
+
+    protected $description = 'Import réservations billet avion depuis Excel (Janvier) avec import_hash/import_source';
 
     public function handle(): int
     {
-        $path = $this->argument('path');
+        $path   = (string) $this->argument('path');
         $dryRun = (bool) $this->option('dry-run');
+        $source = (string) ($this->option('source') ?: 'ETATUTJANVIER2026');
+        $year   = (int) ($this->option('year') ?: 2026);
+        $month  = (int) ($this->option('month') ?: 1);
 
         $fullPath = base_path($path);
         if (!file_exists($fullPath)) {
             $this->error("Fichier introuvable: {$path}");
+            $this->line("Astuce Windows: vérifie l'espace/le nom exact du fichier + le bon dossier storage/app/imports/");
             return self::FAILURE;
         }
 
@@ -32,16 +41,15 @@ class ImportReservationsJanvier extends Command
         // On détecte la ligne header: colonne A == "Date"
         $headerRowIndex = null;
         foreach ($rows as $i => $row) {
-            $val = trim((string)($row['A'] ?? ''));
+            $val = trim((string) ($row['A'] ?? ''));
             if (mb_strtolower($val) === 'date') {
                 $headerRowIndex = $i;
                 break;
             }
         }
 
+        // fallback si pas trouvé
         if (!$headerRowIndex) {
-            // Dans ton fichier, la date est déjà en datetime sur les vraies lignes.
-            // Donc si header non trouvé, on commence après la zone "UNIVERSAL TOURS..." -> on prend 12 comme fallback.
             $headerRowIndex = 11;
         }
 
@@ -57,25 +65,25 @@ class ImportReservationsJanvier extends Command
             // C = payeur
             // E = passager
             // F = itinéraire (ex: DSS-DXB-CMN-DSS)
-            // G = référence (PNR)
+            // G = référence / PNR (souvent)
             // H = vente HT / sous-total
-            // J = frais (souvent)
-            // K = total TTC (souvent)
-            $dateRaw = $row['A'] ?? null;
-            $ref = trim((string)($row['G'] ?? ''));
-            $payeurRaw = trim((string)($row['C'] ?? ''));
-            $passagerRaw = trim((string)($row['E'] ?? ''));
-            $itineraire = trim((string)($row['F'] ?? ''));
+            // J = frais
+            // K = total TTC
+            $dateRaw     = $row['A'] ?? null;
+            $payeurRaw   = trim((string) ($row['C'] ?? ''));
+            $passagerRaw = trim((string) ($row['E'] ?? ''));
+            $itineraire  = trim((string) ($row['F'] ?? ''));
+            $pnr         = trim((string) ($row['G'] ?? ''));
 
-            // skip lignes vides
-            if ($ref === '' && $payeurRaw === '' && $passagerRaw === '' && $itineraire === '') {
+            // skip lignes complètement vides
+            if ($payeurRaw === '' && $passagerRaw === '' && $itineraire === '' && $pnr === '') {
                 continue;
             }
 
-            $date = $this->parseExcelDate($dateRaw);
+            $date = $this->parseExcelDate($dateRaw, $year, $month);
             if (!$date) {
                 $skipped++;
-                $this->line("[SKIP] Date illisible ligne {$i}: " . (string)($row['A'] ?? ''));
+                $this->line("[SKIP] Date illisible ligne {$i}: " . (string) ($row['A'] ?? ''));
                 continue;
             }
 
@@ -84,72 +92,87 @@ class ImportReservationsJanvier extends Command
             $frais     = $this->parseMoney($row['J'] ?? null);
             $totalK    = $this->parseMoney($row['K'] ?? null);
 
-            // si K est vide, on prend H comme total
             $montantTotal = $totalK !== null ? $totalK : ($sousTotal ?? 0);
-
-            // si H est vide, on peut fallback total
-            if ($sousTotal === null) {
-                $sousTotal = $montantTotal;
-            }
+            if ($sousTotal === null) $sousTotal = $montantTotal;
 
             // Normaliser payeur/passager (si passager vide -> passager = payeur)
             if ($payeurRaw === '') $payeurRaw = $passagerRaw;
             if ($passagerRaw === '') $passagerRaw = $payeurRaw;
+            if ($payeurRaw === '') $payeurRaw = 'Client Import';
+            if ($passagerRaw === '') $passagerRaw = $payeurRaw;
 
-            // Parsing itinéraire
             [$vd, $va] = $this->parseRoute($itineraire);
-            if (!$vd || !$va) {
-                // si itinéraire vide, on fabrique quand même une ref affichable
-                $vd = $vd ?: 'DSS';
-                $va = $va ?: 'DSS';
-            }
 
-            // Dry output
+            // ✅ IMPORT HASH : stable même si PNR vide ou dupliqué
+            // On mixe: date + payeur + passager + route + total + pnr + source
+            $importHash = $this->makeImportHash([
+                'source'   => $source,
+                'date'     => $date,
+                'payeur'   => $payeurRaw,
+                'passager' => $passagerRaw,
+                'vd'       => $vd,
+                'va'       => $va,
+                'pnr'      => $pnr,
+                'total'    => $montantTotal,
+            ]);
+
             if ($dryRun) {
-                $this->line("[DRY] {$date} | {$payeurRaw} -> {$passagerRaw} | {$vd}->{$va} | {$ref} | {$montantTotal}");
+                $this->line("[DRY] {$date} | {$payeurRaw} -> {$passagerRaw} | " . ($vd ?: '-') . "->" . ($va ?: '-') . " | PNR:" . ($pnr ?: '-') . " | total:" . ($montantTotal ?? 0) . " | hash:" . substr($importHash, 0, 10));
                 continue;
             }
 
             DB::transaction(function () use (
-                $ref, $date, $payeurRaw, $passagerRaw, $vd, $va,
+                $source, $importHash,
+                $pnr, $date, $payeurRaw, $passagerRaw, $vd, $va,
                 $sousTotal, $frais, $montantTotal,
                 &$created, &$updated
             ) {
-                // 1) Client
+                // 1) Client (dédoublonnage simple nom/prenom)
                 $client = $this->firstOrCreateClientByFullName($payeurRaw);
 
-                // 2) Upsert reservation by reference (unique)
-                $reservation = Reservation::where('reference', $ref)->first();
+                // 2) Upsert reservation par import_hash (NOTRE clé)
+                $reservation = Reservation::where('import_hash', $importHash)->first();
 
+                // ✅ Reference : si PNR présent -> on le met, sinon on garde une référence interne si vide
+                // IMPORTANT : si ta colonne "reference" est UNIQUE, il faut éviter les collisions.
+                // Ici: si PNR vide, on génère une reference unique.
+                $reference = $pnr !== '' ? $pnr : $this->fallbackReference($vd, $va);
+
+                $payload = [
+                    'client_id'          => $client->id,
+                    'type'               => Reservation::TYPE_BILLET_AVION,
+                    'statut'             => Reservation::STATUT_CONFIRME,
+                    'nombre_personnes'   => 1,
+                    'montant_sous_total' => $sousTotal ?? 0,
+                    'montant_taxes'      => $frais ?? 0,
+                    'montant_total'      => $montantTotal ?? 0,
+                    'notes'              => 'Import Janvier (Excel)',
+                    'import_source'      => $source,
+                    'import_hash'        => $importHash,
+                ];
+
+                // Si nouvel enregistrement : reference obligatoire
+                // Si update : on ne change PAS la reference si elle existe déjà (évite de casser l’unicité/historique)
                 if ($reservation) {
                     $updated++;
-                    $reservation->update([
-                        'client_id' => $client->id,
-                        'type' => Reservation::TYPE_BILLET_AVION,
-                        'statut' => Reservation::STATUT_CONFIRME,
-                        'nombre_personnes' => 1,
-                        'montant_sous_total' => $sousTotal,
-                        'montant_taxes' => $frais ?? 0,
-                        'montant_total' => $montantTotal,
-                        'notes' => 'Import Janvier (Excel)',
-                    ]);
+                    $reservation->update($payload);
                 } else {
                     $created++;
-                    $reservation = Reservation::create([
-                        'client_id' => $client->id,
-                        'type' => Reservation::TYPE_BILLET_AVION,
-                        'reference' => $ref,
-                        'statut' => Reservation::STATUT_CONFIRME,
-                        'nombre_personnes' => 1,
-                        'montant_sous_total' => $sousTotal,
-                        'montant_taxes' => $frais ?? 0,
-                        'montant_total' => $montantTotal,
-                        'notes' => 'Import Janvier (Excel)',
-                    ]);
+
+                    // ⚠️ sécurité unicité : si reference existe déjà, on suffixe
+                    if (Reservation::where('reference', $reference)->exists()) {
+                        $reference = $reference . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
+                    }
+
+                    $reservation = Reservation::create(array_merge($payload, [
+                        'reference' => $reference,
+                        'produit_id' => null,
+                        'forfait_id' => null,
+                    ]));
                 }
 
                 // 3) Passager (participant lié à la réservation) + passenger_id
-                //    On évite de recréer si déjà présent
+                // On veut 1 passager "central". Si déjà présent, on garde.
                 $passenger = $reservation->participants()
                     ->where('role', 'passenger')
                     ->first();
@@ -158,8 +181,8 @@ class ImportReservationsJanvier extends Command
                     [$nom, $prenom] = $this->splitName($passagerRaw);
 
                     $passenger = $reservation->participants()->create([
-                        'role' => 'passenger',
-                        'nom' => $nom,
+                        'role'   => 'passenger',
+                        'nom'    => $nom,
                         'prenom' => $prenom,
                     ]);
                 }
@@ -168,23 +191,22 @@ class ImportReservationsJanvier extends Command
                     $reservation->update(['passenger_id' => $passenger->id]);
                 }
 
-                // 4) Flight details (table reservation_flight_details)
-                //    On upsert (1-1 via unique reservation_id)
+                // 4) Flight details (table reservation_flight_details) : upsert 1-1
                 $reservation->flightDetails()->updateOrCreate(
                     ['reservation_id' => $reservation->id],
                     [
-                        'ville_depart' => $vd,
-                        'ville_arrivee' => $va,
-                        'date_depart' => $date,
-                        'date_arrivee' => null,
-                        'compagnie' => null,
-                        'pnr' => $ref, // optionnel: tu peux stocker le PNR ici aussi
-                        'classe' => null,
+                        'ville_depart'  => $vd ?: 'DSS',
+                        'ville_arrivee' => $va ?: ($vd ?: 'DSS'),
+                        'date_depart'   => $date,
+                        'date_arrivee'  => null,
+                        'compagnie'     => null,
+                        'pnr'           => $pnr !== '' ? $pnr : null,
+                        'classe'        => null,
                     ]
                 );
 
-                // 5) Facture : si tu veux (optionnel)
-                // (si ton controller le fait déjà, tu peux laisser l’import sans facture)
+                // 5) Facture (optionnel)
+                // Si tu veux aussi facturer à l’import, fais-le ici.
                 // app(\App\Http\Controllers\API\ReservationController::class)->ensureFactureEmise($reservation);
             });
         }
@@ -198,53 +220,87 @@ class ImportReservationsJanvier extends Command
         return self::SUCCESS;
     }
 
+    private function makeImportHash(array $data): string
+    {
+        // Normalisation “stable”
+        $norm = function ($v) {
+            $v = (string) ($v ?? '');
+            $v = trim(mb_strtolower($v));
+            $v = preg_replace('/\s+/u', ' ', $v);
+            return $v;
+        };
+
+        $blob = implode('|', [
+            $norm($data['source'] ?? ''),
+            $norm($data['date'] ?? ''),
+            $norm($data['payeur'] ?? ''),
+            $norm($data['passager'] ?? ''),
+            $norm($data['vd'] ?? ''),
+            $norm($data['va'] ?? ''),
+            $norm($data['pnr'] ?? ''),
+            $norm($data['total'] ?? ''),
+        ]);
+
+        return hash('sha256', $blob);
+    }
+
+    private function fallbackReference(?string $vd, ?string $va): string
+    {
+        // Ex: UT-AV-20260215-DSS-CDG-AB12CD
+        $rand = strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
+        $vd = $vd ?: 'DSS';
+        $va = $va ?: $vd;
+        return 'UT-AV-' . date('Ymd') . '-' . $vd . '-' . $va . '-' . $rand;
+    }
+
     private function parseMoney($v): ?float
     {
         if ($v === null) return null;
+        if (is_int($v) || is_float($v)) return (float) $v;
 
-        // si c'est déjà numérique (cas PhpSpreadsheet)
-        if (is_int($v) || is_float($v)) return (float)$v;
-
-        $s = trim((string)$v);
+        $s = trim((string) $v);
         if ($s === '') return null;
 
-        // enlever espaces, séparateurs
         $s = str_replace(["\u{00A0}", ' '], '', $s);
         $s = str_replace([','], '.', $s);
-
-        // garder chiffres + point
         $s = preg_replace('/[^0-9.]/', '', $s);
-        if ($s === '' || $s === '.') return null;
 
-        return (float)$s;
+        if ($s === '' || $s === '.') return null;
+        return (float) $s;
     }
 
-    private function parseExcelDate($v): ?string
+    private function parseExcelDate($v, int $year, int $month): ?string
     {
-        // Dans ton fichier, c'est souvent un DateTime PHP
         if ($v instanceof \DateTimeInterface) {
             return $v->format('Y-m-d');
         }
 
-        $s = trim((string)$v);
+        $s = trim((string) $v);
         if ($s === '') return null;
 
-        // Support "C13/1" => 13/1
+        // Support "C13/1" => "13/1"
         $s = preg_replace('/^[A-Za-z]+/u', '', $s);
         $s = trim($s);
 
-        // Support "13/1" => janvier 2026
+        // Support "13/1" => année/mois fournis
         if (preg_match('#^(\d{1,2})/(\d{1,2})$#', $s, $m)) {
-            $d = (int)$m[1];
-            $mo = (int)$m[2];
-            $y = 2026; // import janvier 2026
-            return sprintf('%04d-%02d-%02d', $y, $mo, $d);
+            $d  = (int) $m[1];
+            $mo = (int) $m[2];
+            return sprintf('%04d-%02d-%02d', $year, $mo, $d);
         }
 
         // Support "2026-01-03"
         if (preg_match('#^\d{4}-\d{2}-\d{2}$#', $s)) return $s;
 
-        // Dernier recours
+        // Support "03/01/2026" ou "3/1/26"
+        if (preg_match('#^(\d{1,2})/(\d{1,2})/(\d{2,4})$#', $s, $m)) {
+            $d = (int) $m[1];
+            $mo = (int) $m[2];
+            $y = (int) $m[3];
+            if ($y < 100) $y += 2000;
+            return sprintf('%04d-%02d-%02d', $y, $mo, $d);
+        }
+
         $t = strtotime($s);
         if ($t === false) return null;
         return date('Y-m-d', $t);
@@ -255,6 +311,7 @@ class ImportReservationsJanvier extends Command
         $route = trim($route);
         if ($route === '') return [null, null];
 
+        // DSS-DXB-CMN-DSS (on prend premier et dernier)
         $parts = array_values(array_filter(array_map('trim', preg_split('/[-–—]/u', $route) ?: [])));
         if (count($parts) === 0) return [null, null];
         if (count($parts) === 1) return [$parts[0], $parts[0]];
@@ -269,7 +326,6 @@ class ImportReservationsJanvier extends Command
 
         [$nom, $prenom] = $this->splitName($fullName);
 
-        // Dédup simple: nom+prenom
         return Client::firstOrCreate(
             ['nom' => $nom, 'prenom' => $prenom],
             ['pays' => 'Sénégal']
@@ -279,10 +335,9 @@ class ImportReservationsJanvier extends Command
     private function splitName(string $full): array
     {
         $full = trim(preg_replace('/\s+/u', ' ', $full));
-
         if ($full === '') return ['-', null];
 
-        // Heuristique entreprise: tout en majuscules et > 2 mots => on garde tout en nom
+        // entreprise (majuscule + >2 mots) => tout en "nom"
         $isAllUpper = (mb_strtoupper($full, 'UTF-8') === $full);
         $words = explode(' ', $full);
 
