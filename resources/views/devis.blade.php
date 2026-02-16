@@ -105,12 +105,9 @@
             Société à Responsabilité Limitée (SARL)<br>
             <!-- Capital : 1 000 000 FCFA<br> -->
             Siège social : Villa n°D40, Cité BCEAO – Nord Foire – Dakar – Sénégal<br>
-            NINEA : 010321503<br>
-            RC : SN.DKR.2023 B.22726<br>
-            Tél : 77 579 96 01<br>
-            Email : universaltoursn@gmail.com<br>
-            Compte bancaire : SN04801007119035000143<br>
-            Banque Agricole
+            NINEA : 010321503 / RC : SN.DKR.2023 B.22726<br>
+            Tél : 77 579 96 01 / Email : universaltoursn@gmail.com<br>
+            Compte bancaire : SN04801007119035000143 / Banque Agricole
         </div>
     </div>
 
