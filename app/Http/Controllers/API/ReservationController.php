@@ -29,24 +29,38 @@ class ReservationController extends Controller
 
     $query = Reservation::query()
         ->with([
-            // ✅ inclure même les clients soft-deleted
             'client' => fn ($q) => $q->withTrashed(),
-
             'produit',
             'forfait',
             'participants',
-            'passenger',        // ✅
-            'flightDetails',    // ✅
+            'passenger',
+            'flightDetails',
             'factures.paiements',
         ])
         ->orderByDesc('created_at');
 
-    // (optionnel) filtres si tu en as
     if ($request->filled('type')) {
         $query->where('type', $request->get('type'));
     }
     if ($request->filled('statut')) {
         $query->where('statut', $request->get('statut'));
+    }
+
+    // ✅ AJOUT: search
+    if ($request->filled('search')) {
+        $term = trim($request->get('search'));
+
+        $query->where(function ($q) use ($term) {
+            $q->where('reference', 'like', "%{$term}%")
+              ->orWhere('id', $term)
+              ->orWhereHas('client', function ($qc) use ($term) {
+                  $qc->withTrashed()
+                     ->where('nom', 'like', "%{$term}%")
+                     ->orWhere('prenom', 'like', "%{$term}%")
+                     ->orWhere('telephone', 'like', "%{$term}%")
+                     ->orWhere('email', 'like', "%{$term}%");
+              });
+        });
     }
 
     return response()->json($query->paginate($perPage));
