@@ -46,6 +46,18 @@ class ReservationController extends Controller
         $query->where('statut', $request->get('statut'));
     }
 
+    if ($request->filled('month')) {
+    $month = $request->get('month'); // ex: 2026-02
+    try {
+        $start = \Carbon\Carbon::createFromFormat('Y-m', $month)->startOfMonth();
+        $end = \Carbon\Carbon::createFromFormat('Y-m', $month)->endOfMonth();
+        $query->whereBetween('created_at', [$start, $end]);
+    } catch (\Exception $e) {
+        // ignore si format invalide
+    }
+}
+
+
     // ✅ AJOUT: search
     if ($request->filled('search')) {
         $term = trim($request->get('search'));
