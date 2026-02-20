@@ -33,16 +33,19 @@ class UpdateReservationRequest extends FormRequest
             'participants.*.prenom' => ['nullable', 'string', 'max:100'],
             'participants.*.age' => ['nullable', 'integer', 'min:0', 'max:120'],
 
-            // Champs vol (optionnels en update, mais requis si type billet_avion)
-            'ville_depart' => ['sometimes', 'nullable', 'string', 'max:100'],
+            // Champs vol (root) - optionnels en update
+            'ville_depart'  => ['sometimes', 'nullable', 'string', 'max:100'],
             'ville_arrivee' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'date_depart' => ['sometimes', 'nullable', 'date'],
-            'date_arrivee' => ['sometimes', 'nullable', 'date'],
-            'compagnie' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'date_depart'   => ['sometimes', 'nullable', 'date'],
+            'date_arrivee'  => ['sometimes', 'nullable', 'date'],
+            'compagnie'     => ['sometimes', 'nullable', 'string', 'max:100'],
 
-            // Montants / infos
-            'montant_sous_total' => ['sometimes', 'nullable', 'numeric', 'min:0'],
-            'montant_total' => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            // Montants
+            'montant_sous_total' => ['sometimes', 'nullable', 'numeric', 'min:0'], // achat/hors fees pour billet_avion
+            'montant_taxes'      => ['sometimes', 'nullable', 'numeric', 'min:0'], // fees pour billet_avion
+            'montant_total'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
+
+            // Autres
             'nombre_personnes' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'notes' => ['sometimes', 'nullable', 'string'],
         ];
@@ -81,11 +84,40 @@ class UpdateReservationRequest extends FormRequest
                     $v->errors()->add('forfait_id', "Un billet d'avion ne doit pas être lié à un forfait.");
                 }
 
-                $requiredFields = ['ville_depart', 'ville_arrivee', 'date_depart', 'date_arrivee', 'compagnie'];
-                foreach ($requiredFields as $field) {
-                    $value = $this->exists($field) ? $this->input($field) : ($reservation?->{$field});
-                    if (empty($value)) {
-                        $v->errors()->add($field, "Le champ {$field} est obligatoire pour un billet d'avion.");
+                /**
+                 * IMPORTANT:
+                 * En UPDATE, on NE doit PAS exiger les champs vol si on ne les modifie pas.
+                 * Mais si le client en envoie au moins 1, on exige le bloc complet.
+                 */
+                $flightFields = ['ville_depart', 'ville_arrivee', 'date_depart', 'date_arrivee', 'compagnie'];
+
+                $anyFlightFieldSent = false;
+                foreach ($flightFields as $field) {
+                    if ($this->exists($field)) { // présent dans la requête (même null)
+                        $anyFlightFieldSent = true;
+                        break;
+                    }
+                }
+
+                if ($anyFlightFieldSent) {
+                    foreach ($flightFields as $field) {
+                        // si on met à jour le vol, chaque champ devient obligatoire dans la requête
+                        if (!$this->filled($field)) {
+                            $v->errors()->add($field, "Le champ {$field} est obligatoire pour un billet d'avion.");
+                        }
+                    }
+                }
+
+                // Bonus cohérence date (seulement si on a les deux dates dans la requête)
+                if ($this->filled('date_depart') && $this->filled('date_arrivee')) {
+                    try {
+                        $depart = new \DateTime($this->input('date_depart'));
+                        $arrivee = new \DateTime($this->input('date_arrivee'));
+                        if ($arrivee < $depart) {
+                            $v->errors()->add('date_arrivee', "La date d'arrivée doit être >= à la date de départ.");
+                        }
+                    } catch (\Exception $e) {
+                        // Les rules 'date' couvriront déjà les erreurs de format
                     }
                 }
 
