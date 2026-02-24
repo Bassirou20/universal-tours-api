@@ -35,6 +35,7 @@ class ReservationController extends Controller
             'participants',
             'passenger',
             'flightDetails',
+            'assuranceDetails',
             'factures.paiements',
         ])
         ->orderByDesc('created_at');
@@ -139,100 +140,135 @@ class ReservationController extends Controller
         // A) BILLET AVION (1 réservation = 1 passager)
         if ($type === Reservation::TYPE_BILLET_AVION) {
 
-            // 1️⃣ Créer la réservation SANS passenger_id
+                    // 1️⃣ Créer la réservation SANS passenger_id
+                    $reservation = Reservation::create([
+                        'client_id' => $client->id,
+                        'type' => Reservation::TYPE_BILLET_AVION,
+                        'reference' => $reference,
+                        'statut' => $statut,
+                        'nombre_personnes' => 1,
+                        'montant_sous_total' => $montantSousTotal,
+                        'montant_taxes' => $montantTaxes,
+                        'montant_total' => $montantTotal,
+                        'notes' => $data['notes'] ?? null,
+                    ]);
+
+                    // 2️⃣ Déterminer le passager
+                    if (!empty($data['passenger_id'])) {
+
+                        $passenger = Participant::where('id', $data['passenger_id'])
+                            ->where('reservation_id', $reservation->id)
+                            ->firstOrFail();
+
+                    } elseif (!empty($data['passenger'])) {
+
+                        $passenger = $reservation->participants()->create([
+                            ...$data['passenger'],
+                            'role' => 'passenger',
+                        ]);
+
+                    } else {
+                        // client = passager
+                        $passenger = $reservation->participants()->create([
+                            'nom' => $client->nom,
+                            'prenom' => $client->prenom,
+                            'role' => 'passenger',
+                        ]);
+                    }
+
+                    // 3️⃣ Lier le passager à la réservation
+                    $reservation->update([
+                        'passenger_id' => $passenger->id
+                    ]);
+
+                    // 4️⃣ Flight details
+                    $reservation->flightDetails()->create($data['flight_details']);
+
+                    // 5️⃣ Facture
+                    $this->ensureFactureEmise($reservation);
+
+                    return response()->json(
+                        $reservation->load([
+                            'client',
+                            'passenger',
+                            'flightDetails',
+                            'factures.paiements'
+                        ]),
+                        Response::HTTP_CREATED
+                    );
+                }
+
+                if ($type === Reservation::TYPE_ASSURANCE) {
+
             $reservation = Reservation::create([
                 'client_id' => $client->id,
-                'type' => Reservation::TYPE_BILLET_AVION,
+                'type' => Reservation::TYPE_ASSURANCE,
                 'reference' => $reference,
                 'statut' => $statut,
-                'nombre_personnes' => 1,
+                'nombre_personnes' => $nombrePersonnes,
+
+                // comme billet : montants détaillés
                 'montant_sous_total' => $montantSousTotal,
                 'montant_taxes' => $montantTaxes,
                 'montant_total' => $montantTotal,
+
                 'notes' => $data['notes'] ?? null,
             ]);
 
-            // 2️⃣ Déterminer le passager
-            if (!empty($data['passenger_id'])) {
+            // ✅ Déterminer le bénéficiaire (même logique que billet)
+            $passengerIsClient = array_key_exists('passenger_is_client', $data)
+                ? (bool) $data['passenger_is_client']
+                : true;
 
-                $passenger = Participant::where('id', $data['passenger_id'])
-                    ->where('reservation_id', $reservation->id)
-                    ->firstOrFail();
-
-            } elseif (!empty($data['passenger'])) {
-
-                $passenger = $reservation->participants()->create([
-                    ...$data['passenger'],
-                    'role' => 'passenger',
-                ]);
-
-            } else {
-                // client = passager
-                $passenger = $reservation->participants()->create([
+            if ($passengerIsClient) {
+                $beneficiary = $reservation->participants()->create([
                     'nom' => $client->nom,
                     'prenom' => $client->prenom,
-                    'role' => 'passenger',
+                    'role' => 'beneficiary',
                 ]);
+            } else {
+                // si passenger fourni -> on le crée
+                if (!empty($data['passenger']) && !empty($data['passenger']['nom'])) {
+                    $beneficiary = $reservation->participants()->create([
+                        'nom' => $data['passenger']['nom'],
+                        'prenom' => $data['passenger']['prenom'] ?? null,
+                        'passport' => $data['passenger']['passport'] ?? null,
+                        'sexe' => $data['passenger']['sexe'] ?? null,
+                        'role' => 'beneficiary',
+                    ]);
+                } else {
+                    // fallback : client
+                    $beneficiary = $reservation->participants()->create([
+                        'nom' => $client->nom,
+                        'prenom' => $client->prenom,
+                        'role' => 'beneficiary',
+                    ]);
+                }
             }
 
-            // 3️⃣ Lier le passager à la réservation
-            $reservation->update([
-                'passenger_id' => $passenger->id
+            // ✅ Lier beneficiary à passenger_id (comme billet)
+            $reservation->update(['passenger_id' => $beneficiary->id]);
+
+            // details assurance (libellé + dates)
+            $reservation->assuranceDetails()->create([
+                'libelle' => $data['assurance_details']['libelle'],
+                'date_debut' => $data['assurance_details']['date_debut'],
+                'date_fin' => $data['assurance_details']['date_fin'] ?? null,
             ]);
 
-            // 4️⃣ Flight details
-            $reservation->flightDetails()->create($data['flight_details']);
-
-            // 5️⃣ Facture
             $this->ensureFactureEmise($reservation);
 
             return response()->json(
                 $reservation->load([
                     'client',
-                    'passenger',
-                    'flightDetails',
-                    'factures.paiements'
+                    'passenger',         // ✅ IMPORTANT (beneficiary)
+                    'participants',      // ✅ optionnel mais utile pour debug
+                    'assuranceDetails',
+                    'factures.paiements',
                 ]),
                 Response::HTTP_CREATED
             );
         }
-
-        if ($type === Reservation::TYPE_ASSURANCE) {
-                $reservation = Reservation::create([
-                    'client_id' => $client->id,
-                    'type' => Reservation::TYPE_ASSURANCE,
-                    'reference' => $reference,
-                    'statut' => $statut,
-                    'nombre_personnes' => $nombrePersonnes,
-
-                    // comme billet : montants détaillés
-                    'montant_sous_total' => $montantSousTotal,
-                    'montant_taxes' => $montantTaxes,
-                    'montant_total' => $montantTotal,
-
-                    // notes depuis reservations.notes
-                    'notes' => $data['notes'] ?? null,
-                ]);
-
-                // details assurance (libellé + dates)
-                $reservation->assuranceDetails()->create([
-                    'libelle' => $data['assurance_details']['libelle'],
-                    'date_debut' => $data['assurance_details']['date_debut'],
-                    'date_fin' => $data['assurance_details']['date_fin'] ?? null,
-                ]);
-
-                $this->ensureFactureEmise($reservation);
-
-                return response()->json(
-                    $reservation->load([
-                        'client',
-                        'assuranceDetails',
-                        'factures.paiements',
-                    ]),
-                    Response::HTTP_CREATED
-                );
-            }
-
 
 
         // B) FORFAIT
@@ -332,6 +368,7 @@ class ReservationController extends Controller
         'participants',
         'passenger',
         'flightDetails',
+        'assuranceDetails',
         'factures.paiements',
     ])->findOrFail($id);
 
