@@ -197,6 +197,41 @@ class ReservationController extends Controller
             );
         }
 
+        if ($type === Reservation::TYPE_ASSURANCE) {
+                $reservation = Reservation::create([
+                    'client_id' => $client->id,
+                    'type' => Reservation::TYPE_ASSURANCE,
+                    'reference' => $reference,
+                    'statut' => $statut,
+                    'nombre_personnes' => $nombrePersonnes,
+
+                    // comme billet : montants détaillés
+                    'montant_sous_total' => $montantSousTotal,
+                    'montant_taxes' => $montantTaxes,
+                    'montant_total' => $montantTotal,
+
+                    // notes depuis reservations.notes
+                    'notes' => $data['notes'] ?? null,
+                ]);
+
+                // details assurance (libellé + dates)
+                $reservation->assuranceDetails()->create([
+                    'libelle' => $data['assurance_details']['libelle'],
+                    'date_debut' => $data['assurance_details']['date_debut'],
+                    'date_fin' => $data['assurance_details']['date_fin'] ?? null,
+                ]);
+
+                $this->ensureFactureEmise($reservation);
+
+                return response()->json(
+                    $reservation->load([
+                        'client',
+                        'assuranceDetails',
+                        'factures.paiements',
+                    ]),
+                    Response::HTTP_CREATED
+                );
+            }
 
 
 
@@ -235,6 +270,8 @@ class ReservationController extends Controller
                 Response::HTTP_CREATED
             );
         }
+
+        
 
         // C) AUTRES TYPES (hotel/voiture/evenement)
         $produit = Produit::findOrFail($data['produit_id']);
@@ -321,6 +358,24 @@ class ReservationController extends Controller
                     'message' => "Le produit sélectionné ne correspond pas au type de réservation ({$finalType})."
                 ], 422);
             }
+        }
+
+        if (($data['type'] ?? $reservation->type) === Reservation::TYPE_ASSURANCE) {
+            if (!empty($data['assurance_details'])) {
+                $reservation->assuranceDetails()->updateOrCreate(
+                    ['reservation_id' => $reservation->id],
+                    [
+                        'libelle' => $data['assurance_details']['libelle'] ?? ($reservation->assuranceDetails->libelle ?? ''),
+                        'date_debut' => $data['assurance_details']['date_debut'] ?? ($reservation->assuranceDetails->date_debut ?? null),
+                        'date_fin' => array_key_exists('date_fin', $data['assurance_details'])
+                            ? ($data['assurance_details']['date_fin'] ?? null)
+                            : ($reservation->assuranceDetails->date_fin ?? null),
+                    ]
+                );
+            }
+
+            // on ne garde pas assurance_details dans update reservation direct
+            unset($data['assurance_details']);
         }
 
         $reservation->update($data);

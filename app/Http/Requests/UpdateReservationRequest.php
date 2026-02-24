@@ -48,6 +48,12 @@ class UpdateReservationRequest extends FormRequest
             // Autres
             'nombre_personnes' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'notes' => ['sometimes', 'nullable', 'string'],
+
+            // Assurance details (conditionnel)
+            'assurance_details' => ['required_if:type,assurance', 'array'],
+            'assurance_details.libelle' => ['required_if:type,assurance', 'string', 'max:255'],
+            'assurance_details.date_debut' => ['required_if:type,assurance', 'date'],
+            'assurance_details.date_fin' => ['nullable', 'date', 'after_or_equal:assurance_details.date_debut'],
         ];
     }
 

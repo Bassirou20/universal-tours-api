@@ -18,6 +18,7 @@ class Reservation extends Model
     public const TYPE_EVENEMENT    = 'evenement';
     public const TYPE_HOTEL        = 'hotel';
     public const TYPE_VOITURE      = 'voiture';
+    public const TYPE_ASSURANCE = 'assurance';
     public const TYPE_FORFAIT = 'forfait';
     public const STATUT_EN_ATTENTE = 'en_attente';
     public const STATUT_CONFIRME = 'confirmee';
@@ -30,6 +31,7 @@ class Reservation extends Model
         self::TYPE_HOTEL,
         self::TYPE_VOITURE,
         self::TYPE_FORFAIT,
+        self::TYPE_ASSURANCE,
     ];
 
     /**
@@ -81,8 +83,8 @@ class Reservation extends Model
             self::TYPE_EVENEMENT    => "Événement",
             self::TYPE_HOTEL        => "Hôtel",
             self::TYPE_VOITURE      => "Location de voiture",
-            self::TYPE_FORFAIT => "Forfait",
-
+            self::TYPE_FORFAIT      => "Forfait",
+            self::TYPE_ASSURANCE    =>"Assurance",
             default                 => "Inconnu",
         };
     }
@@ -135,6 +137,11 @@ class Reservation extends Model
     public function flightDetails(): HasOne
     {
         return $this->hasOne(\App\Models\ReservationFlightDetail::class);
+    }
+
+    public function assuranceDetails()
+    {
+        return $this->hasOne(\App\Models\ReservationAssurance::class);
     }
 
     public function forfait(): BelongsTo

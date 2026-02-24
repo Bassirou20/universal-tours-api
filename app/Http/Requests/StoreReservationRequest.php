@@ -17,7 +17,7 @@ class StoreReservationRequest extends FormRequest
     {
         return [
             /* ================= TYPE ================= */
-            'type' => 'required|in:billet_avion,hotel,voiture,evenement,forfait',
+            'type' => 'required|in:billet_avion,hotel,voiture,evenement,forfait,assurance',
 
             /* ================= CLIENT ================= */
             'client_id' => 'nullable|exists:clients,id',
@@ -74,6 +74,12 @@ class StoreReservationRequest extends FormRequest
             'flight_details.compagnie' => 'nullable|string|max:100',
             'flight_details.pnr' => 'nullable|string|max:50',
             'flight_details.classe' => 'nullable|string|max:50',
+
+            // Assurance details (conditionnel)
+            'assurance_details' => ['required_if:type,assurance', 'array'],
+            'assurance_details.libelle' => ['required_if:type,assurance', 'string', 'max:255'],
+            'assurance_details.date_debut' => ['required_if:type,assurance', 'date'],
+            'assurance_details.date_fin' => ['nullable', 'date', 'after_or_equal:assurance_details.date_debut'],
         ];
     }
 
