@@ -17,6 +17,9 @@ class UpdateReservationRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // ✅ permettre de changer le client en update
+            'client_id' => ['sometimes', 'nullable', 'exists:clients,id'],
+
             // type optionnel en update
             'type' => ['sometimes', Rule::in(Reservation::TYPES)],
 
@@ -33,16 +36,18 @@ class UpdateReservationRequest extends FormRequest
             'participants.*.prenom' => ['nullable', 'string', 'max:100'],
             'participants.*.age' => ['nullable', 'integer', 'min:0', 'max:120'],
 
-            // Champs vol (root) - optionnels en update
+            // ✅ Champs vol (root) - tous optionnels + NULLABLE
             'ville_depart'  => ['sometimes', 'nullable', 'string', 'max:100'],
             'ville_arrivee' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'date_depart'   => ['sometimes', 'nullable', 'date'],
-            'date_arrivee'  => ['sometimes', 'nullable', 'date'],
+            'date_depart'   => ['sometimes', 'nullable', 'date'], // ✅ nullable
+            'date_arrivee'  => ['sometimes', 'nullable', 'date'], // ✅ nullable
             'compagnie'     => ['sometimes', 'nullable', 'string', 'max:100'],
+            'pnr'           => ['sometimes', 'nullable', 'string', 'max:50'],
+            'classe'        => ['sometimes', 'nullable', 'string', 'max:50'],
 
             // Montants
-            'montant_sous_total' => ['sometimes', 'nullable', 'numeric', 'min:0'], // achat/hors fees pour billet_avion
-            'montant_taxes'      => ['sometimes', 'nullable', 'numeric', 'min:0'], // fees pour billet_avion
+            'montant_sous_total' => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            'montant_taxes'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'montant_total'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
 
             // Autres
@@ -50,9 +55,9 @@ class UpdateReservationRequest extends FormRequest
             'notes' => ['sometimes', 'nullable', 'string'],
 
             // Assurance details (conditionnel)
-            'assurance_details' => ['required_if:type,assurance', 'array'],
-            'assurance_details.libelle' => ['required_if:type,assurance', 'string', 'max:255'],
-            'assurance_details.date_debut' => ['required_if:type,assurance', 'date'],
+            'assurance_details' => ['sometimes', 'array'],
+            'assurance_details.libelle' => ['required_with:assurance_details', 'string', 'max:255'],
+            'assurance_details.date_debut' => ['required_with:assurance_details', 'date'],
             'assurance_details.date_fin' => ['nullable', 'date', 'after_or_equal:assurance_details.date_debut'],
         ];
     }
@@ -60,19 +65,15 @@ class UpdateReservationRequest extends FormRequest
     public function withValidator($validator)
     {
         $validator->after(function ($v) {
-
             /** @var \App\Models\Reservation|null $reservation */
-            $reservation = $this->route('reservation'); // route-model binding
+            $reservation = $this->route('reservation');
 
-            // Type final (si non fourni, on garde l’existant)
             $finalType = $this->input('type', $reservation?->type);
 
-            // Produit final
             $finalProduitId = $this->exists('produit_id')
                 ? $this->input('produit_id')
                 : ($reservation?->produit_id);
 
-            // Forfait final
             $finalForfaitId = $this->exists('forfait_id')
                 ? $this->input('forfait_id')
                 : ($reservation?->forfait_id);
@@ -85,36 +86,42 @@ class UpdateReservationRequest extends FormRequest
                 if (!is_null($finalProduitId)) {
                     $v->errors()->add('produit_id', "Un billet d'avion ne doit pas être lié à un produit.");
                 }
-
                 if (!is_null($finalForfaitId)) {
                     $v->errors()->add('forfait_id', "Un billet d'avion ne doit pas être lié à un forfait.");
                 }
 
                 /**
-                 * IMPORTANT:
-                 * En UPDATE, on NE doit PAS exiger les champs vol si on ne les modifie pas.
-                 * Mais si le client en envoie au moins 1, on exige le bloc complet.
+                 * ✅ Nouvelle règle:
+                 * - En UPDATE, si l'utilisateur envoie AU MOINS 1 champ vol,
+                 *   on accepte que date_depart / date_arrivee soient NULL (ton souhait),
+                 *   mais on exige au minimum ville_depart + ville_arrivee (et compagnie si tu veux).
                  */
-                $flightFields = ['ville_depart', 'ville_arrivee', 'date_depart', 'date_arrivee', 'compagnie'];
+                $flightFields = ['ville_depart', 'ville_arrivee', 'date_depart', 'date_arrivee', 'compagnie', 'pnr', 'classe'];
 
                 $anyFlightFieldSent = false;
                 foreach ($flightFields as $field) {
-                    if ($this->exists($field)) { // présent dans la requête (même null)
+                    if ($this->exists($field)) {
                         $anyFlightFieldSent = true;
                         break;
                     }
                 }
 
                 if ($anyFlightFieldSent) {
-                    foreach ($flightFields as $field) {
-                        // si on met à jour le vol, chaque champ devient obligatoire dans la requête
-                        if (!$this->filled($field)) {
-                            $v->errors()->add($field, "Le champ {$field} est obligatoire pour un billet d'avion.");
-                        }
+                    // ✅ on exige juste les villes (le reste peut être null)
+                    if (!$this->filled('ville_depart')) {
+                        $v->errors()->add('ville_depart', "Le champ ville_depart est requis si tu modifies le vol.");
                     }
+                    if (!$this->filled('ville_arrivee')) {
+                        $v->errors()->add('ville_arrivee', "Le champ ville_arrivee est requis si tu modifies le vol.");
+                    }
+
+                    // Optionnel: exiger compagnie si tu veux
+                    // if (!$this->filled('compagnie')) {
+                    //     $v->errors()->add('compagnie', "Le champ compagnie est requis si tu modifies le vol.");
+                    // }
                 }
 
-                // Bonus cohérence date (seulement si on a les deux dates dans la requête)
+                // ✅ cohérence dates seulement si les 2 sont présentes et non null
                 if ($this->filled('date_depart') && $this->filled('date_arrivee')) {
                     try {
                         $depart = new \DateTime($this->input('date_depart'));
@@ -123,7 +130,7 @@ class UpdateReservationRequest extends FormRequest
                             $v->errors()->add('date_arrivee', "La date d'arrivée doit être >= à la date de départ.");
                         }
                     } catch (\Exception $e) {
-                        // Les rules 'date' couvriront déjà les erreurs de format
+                        // rules date couvrent déjà
                     }
                 }
 
@@ -134,37 +141,42 @@ class UpdateReservationRequest extends FormRequest
             // 2) FORFAIT
             // -----------------------------
             if ($finalType === Reservation::TYPE_FORFAIT) {
-
-                // forfait obligatoire
                 if (is_null($finalForfaitId)) {
                     $v->errors()->add('forfait_id', "Le forfait est obligatoire pour une réservation de type forfait.");
                 }
-
-                // produit interdit
                 if (!is_null($finalProduitId)) {
                     $v->errors()->add('produit_id', "Un forfait ne doit pas être lié à un produit.");
                 }
-
                 return;
             }
 
             // -----------------------------
-            // 3) HOTEL / VOITURE / EVENEMENT
+            // 3) ASSURANCE
             // -----------------------------
+            if ($finalType === Reservation::TYPE_ASSURANCE) {
+                // produit/forfait interdits
+                if (!is_null($finalProduitId)) {
+                    $v->errors()->add('produit_id', "Une assurance ne doit pas être liée à un produit.");
+                }
+                if (!is_null($finalForfaitId)) {
+                    $v->errors()->add('forfait_id', "Une assurance ne doit pas être liée à un forfait.");
+                }
+                return;
+            }
 
-            // Produit obligatoire pour tout type restant
+            // -----------------------------
+            // 4) HOTEL / VOITURE / EVENEMENT
+            // -----------------------------
             if (is_null($finalProduitId)) {
                 $v->errors()->add('produit_id', "Le produit est obligatoire pour ce type de réservation.");
                 return;
             }
 
-            // Produit doit correspondre au type
             $produit = Produit::find($finalProduitId);
             if ($produit && $produit->type !== $finalType) {
                 $v->errors()->add('produit_id', "Le produit sélectionné ne correspond pas au type de réservation ({$finalType}).");
             }
 
-            // Forfait autorisé uniquement si type = evenement
             if (!is_null($finalForfaitId) && $finalType !== Reservation::TYPE_EVENEMENT) {
                 $v->errors()->add('forfait_id', "Le forfait n'est autorisé que pour les réservations de type événement.");
             }

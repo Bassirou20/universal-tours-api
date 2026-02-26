@@ -66,14 +66,14 @@ class StoreReservationRequest extends FormRequest
             'passenger.email' => 'nullable|email|max:255',
 
             /* ================= BILLET AVION : détails vol ================= */
-            'flight_details' => 'nullable|array',
-            'flight_details.ville_depart' => 'nullable|string|max:100',
-            'flight_details.ville_arrivee' => 'nullable|string|max:100',
-            'flight_details.date_depart' => 'nullable|date',
-            'flight_details.date_arrivee' => 'nullable|date',
-            'flight_details.compagnie' => 'nullable|string|max:100',
-            'flight_details.pnr' => 'nullable|string|max:50',
-            'flight_details.classe' => 'nullable|string|max:50',
+            'flight_details' => ['sometimes', 'array'],
+            'flight_details.ville_depart'  => ['sometimes', 'nullable', 'string', 'max:100'],
+            'flight_details.ville_arrivee' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'flight_details.date_depart'   => ['sometimes', 'nullable', 'date'],
+            'flight_details.date_arrivee'  => ['sometimes', 'nullable', 'date'],
+            'flight_details.compagnie'     => ['sometimes', 'nullable', 'string', 'max:100'],
+            'flight_details.pnr'           => ['sometimes', 'nullable', 'string', 'max:50'],
+            'flight_details.classe'        => ['sometimes', 'nullable', 'string', 'max:50'],
 
             // Assurance details (conditionnel)
             'assurance_details' => ['required_if:type,assurance', 'array'],
@@ -229,36 +229,36 @@ class StoreReservationRequest extends FormRequest
         /* -------------------------------------------------
          | 5) Billet avion : flight_details obligatoires
          |-------------------------------------------------*/
-        if ($type === Reservation::TYPE_BILLET_AVION) {
+        // if ($type === Reservation::TYPE_BILLET_AVION) {
 
-            $fd = $this->input('flight_details');
+        //     $fd = $this->input('flight_details');
 
-            if (empty($fd) || !is_array($fd)) {
-                $v->errors()->add(
-                    'flight_details',
-                    "Les détails du vol sont obligatoires pour un billet d'avion."
-                );
-                return;
-            }
+        //     if (empty($fd) || !is_array($fd)) {
+        //         $v->errors()->add(
+        //             'flight_details',
+        //             "Les détails du vol sont obligatoires pour un billet d'avion."
+        //         );
+        //         return;
+        //     }
 
-            foreach (['ville_depart', 'ville_arrivee', 'date_depart'] as $field) {
-                if (empty($fd[$field])) {
-                    $v->errors()->add(
-                        "flight_details.$field",
-                        "Le champ flight_details.$field est obligatoire."
-                    );
-                }
-            }
+        //     foreach (['ville_depart', 'ville_arrivee', 'date_depart'] as $field) {
+        //         if (empty($fd[$field])) {
+        //             $v->errors()->add(
+        //                 "flight_details.$field",
+        //                 "Le champ flight_details.$field est obligatoire."
+        //             );
+        //         }
+        //     }
 
-            if (!empty($fd['date_depart']) && !empty($fd['date_arrivee'])) {
-                if (strtotime($fd['date_arrivee']) < strtotime($fd['date_depart'])) {
-                    $v->errors()->add(
-                        "flight_details.date_arrivee",
-                        "date_arrivee ne peut pas être avant date_depart."
-                    );
-                }
-            }
-        }
+        //     if (!empty($fd['date_depart']) && !empty($fd['date_arrivee'])) {
+        //         if (strtotime($fd['date_arrivee']) < strtotime($fd['date_depart'])) {
+        //             $v->errors()->add(
+        //                 "flight_details.date_arrivee",
+        //                 "date_arrivee ne peut pas être avant date_depart."
+        //             );
+        //         }
+        //     }
+        // }
     });
 }
 

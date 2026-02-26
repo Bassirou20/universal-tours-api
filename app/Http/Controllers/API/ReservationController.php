@@ -182,8 +182,20 @@ class ReservationController extends Controller
                     ]);
 
                     // 4️⃣ Flight details
-                    $reservation->flightDetails()->create($data['flight_details']);
+                   if (!empty($data['flight_details']) && is_array($data['flight_details'])) {
+                        // on vérifie qu'il y a au moins une valeur non vide
+                        $hasAny = collect($data['flight_details'])->filter(function ($v) {
+                            return !is_null($v) && trim((string) $v) !== '';
+                        })->isNotEmpty();
 
+                        if ($hasAny) {
+                            $res = collect($data['flight_details'])->only([
+                                'ville_depart','ville_arrivee','date_depart','date_arrivee','compagnie','pnr','classe'
+                            ])->toArray();
+
+                            $reservation->flightDetails()->create($res);
+                        }
+                    }
                     // 5️⃣ Facture
                     $this->ensureFactureEmise($reservation);
 
@@ -381,50 +393,147 @@ class ReservationController extends Controller
      * Mise à jour d'une réservation
      */
 
-    public function update(UpdateReservationRequest $request, Reservation $reservation)
-    {
-        $data = $request->validated();
+   public function update(UpdateReservationRequest $request, Reservation $reservation)
+{
+    $data = $request->validated();
 
-        // cohérence type/produit si modifié
-        if (!empty($data['produit_id'])) {
-            $produit = Produit::findOrFail($data['produit_id']);
+    // cohérence type/produit si modifié
+    if (!empty($data['produit_id'])) {
+        $produit = Produit::findOrFail($data['produit_id']);
+        $finalType = $data['type'] ?? $reservation->type;
 
-            $finalType = $data['type'] ?? $reservation->type;
-            if ($produit->type !== $finalType) {
-                return response()->json([
-                    'message' => "Le produit sélectionné ne correspond pas au type de réservation ({$finalType})."
-                ], 422);
+        if ($produit->type !== $finalType) {
+            return response()->json([
+                'message' => "Le produit sélectionné ne correspond pas au type de réservation ({$finalType})."
+            ], 422);
+        }
+    }
+
+    $finalType = $data['type'] ?? $reservation->type;
+
+    // ✅ MAJ billet avion: flight details optionnels (on ne touche que si au moins 1 champ vol est envoyé)
+    if ($finalType === Reservation::TYPE_BILLET_AVION) {
+        $flightKeys = ['ville_depart', 'ville_arrivee', 'date_depart', 'date_arrivee', 'compagnie', 'pnr', 'classe'];
+
+        $anyFlightFieldSent = false;
+        foreach ($flightKeys as $k) {
+            if (array_key_exists($k, $data)) {
+                $anyFlightFieldSent = true;
+                break;
             }
         }
 
-        if (($data['type'] ?? $reservation->type) === Reservation::TYPE_ASSURANCE) {
-            if (!empty($data['assurance_details'])) {
+        if ($anyFlightFieldSent) {
+            $existing = $reservation->flightDetails;
+
+            $payload = [
+                'ville_depart'  => array_key_exists('ville_depart', $data)  ? ($data['ville_depart'] ?: null)  : ($existing->ville_depart ?? null),
+                'ville_arrivee' => array_key_exists('ville_arrivee', $data) ? ($data['ville_arrivee'] ?: null) : ($existing->ville_arrivee ?? null),
+                'date_depart'   => array_key_exists('date_depart', $data)   ? ($data['date_depart'] ?: null)   : ($existing->date_depart ?? null),
+                'date_arrivee'  => array_key_exists('date_arrivee', $data)  ? ($data['date_arrivee'] ?: null)  : ($existing->date_arrivee ?? null),
+                'compagnie'     => array_key_exists('compagnie', $data)     ? ($data['compagnie'] ?: null)     : ($existing->compagnie ?? null),
+                'pnr'           => array_key_exists('pnr', $data)           ? ($data['pnr'] ?: null)           : ($existing->pnr ?? null),
+                'classe'        => array_key_exists('classe', $data)        ? ($data['classe'] ?: null)        : ($existing->classe ?? null),
+            ];
+
+            $reservation->flightDetails()->updateOrCreate(
+                ['reservation_id' => $reservation->id],
+                $payload
+            );
+        }
+
+        // On ne stocke pas ces champs sur reservations table si tu utilises la table reservation_flight_details
+        foreach (['ville_depart','ville_arrivee','date_depart','date_arrivee','compagnie','pnr','classe'] as $k) {
+            unset($data[$k]);
+        }
+    }
+
+    // ✅ MAJ assurance details : optionnels en update (on ne touche que si assurance_details est envoyé)
+    if ($finalType === Reservation::TYPE_ASSURANCE) {
+        if (array_key_exists('assurance_details', $data) && is_array($data['assurance_details'])) {
+            $incoming = $data['assurance_details'];
+            $existing = $reservation->assuranceDetails;
+
+            // Si le front envoie un objet vide {}, on ignore (pas de MAJ)
+            $hasAny = false;
+            foreach (['libelle','date_debut','date_fin'] as $k) {
+                if (array_key_exists($k, $incoming)) { $hasAny = true; break; }
+            }
+
+            if ($hasAny) {
                 $reservation->assuranceDetails()->updateOrCreate(
                     ['reservation_id' => $reservation->id],
                     [
-                        'libelle' => $data['assurance_details']['libelle'] ?? ($reservation->assuranceDetails->libelle ?? ''),
-                        'date_debut' => $data['assurance_details']['date_debut'] ?? ($reservation->assuranceDetails->date_debut ?? null),
-                        'date_fin' => array_key_exists('date_fin', $data['assurance_details'])
-                            ? ($data['assurance_details']['date_fin'] ?? null)
-                            : ($reservation->assuranceDetails->date_fin ?? null),
+                        'libelle' => array_key_exists('libelle', $incoming)
+                            ? ($incoming['libelle'] ?: '')
+                            : ($existing->libelle ?? ''),
+
+                        'date_debut' => array_key_exists('date_debut', $incoming)
+                            ? ($incoming['date_debut'] ?: null)
+                            : ($existing->date_debut ?? null),
+
+                        'date_fin' => array_key_exists('date_fin', $incoming)
+                            ? ($incoming['date_fin'] ?: null)
+                            : ($existing->date_fin ?? null),
                     ]
                 );
             }
-
-            // on ne garde pas assurance_details dans update reservation direct
-            unset($data['assurance_details']);
         }
 
-        $reservation->update($data);
-
-        // ✅ si la réservation est confirmée (ou le devient), on s'assure d'avoir une facture
-        if (($reservation->fresh()->statut ?? null) === Reservation::STATUT_CONFIRME) {
-            $this->ensureFactureEmise($reservation->fresh());
-        }
-
-        return $reservation->fresh()->load(['client', 'produit', 'forfait', 'participants', 'factures.paiements']);
+        unset($data['assurance_details']);
     }
 
+    // ✅ Sync participants si le front les envoie (FORFAIT / EVENEMENT)
+    if (array_key_exists('participants', $data)) {
+
+        // Optionnel : si billet_avion / hotel / voiture => on ignore ou on bloque
+        if (!in_array($finalType, [Reservation::TYPE_FORFAIT, Reservation::TYPE_EVENEMENT], true)) {
+            // soit ignore :
+            unset($data['participants']);
+        } else {
+            $incoming = is_array($data['participants']) ? $data['participants'] : [];
+
+            // On supprime les anciens "participants" (hors passenger/beneficiary si tu veux)
+            $reservation->participants()
+                ->where('role', '!=', 'passenger')   // adapte selon ta logique
+                ->where('role', '!=', 'beneficiary') // assurance
+                ->delete();
+
+            // On recrée
+            foreach ($incoming as $p) {
+                $reservation->participants()->create([
+                    'nom' => $p['nom'],
+                    'prenom' => $p['prenom'] ?? null,
+                    'age' => $p['age'] ?? null,
+                    'passport' => $p['passport'] ?? null, // si colonne existe
+                    'remarques' => $p['remarques'] ?? null, // si colonne existe
+                    'role' => $p['role'] ?? 'participant',  // ou 'passenger'
+                ]);
+            }
+
+            // Important : on ne veut pas que reservation->update() tente d’update "participants"
+            unset($data['participants']);
+        }
+    }
+
+    // Update reservation (champs communs / produit / forfait / montants etc.)
+    $reservation->update($data);
+
+    if (($reservation->fresh()->statut ?? null) === Reservation::STATUT_CONFIRME) {
+        $this->ensureFactureEmise($reservation->fresh());
+    }
+
+    return $reservation->fresh()->load([
+        'client',
+        'produit',
+        'forfait',
+        'participants',
+        'passenger',
+        'flightDetails',
+        'assuranceDetails',
+        'factures.paiements'
+    ]);
+}
     /**
      * Suppression d'une réservation
      */
