@@ -516,6 +516,101 @@ class ReservationController extends Controller
         }
     }
 
+// ✅ MAJ bénéficiaire / passager (billet_avion + assurance)
+if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_ASSURANCE], true)) {
+
+    $reservation->loadMissing('client', 'participants', 'passenger');
+
+    $role = $finalType === Reservation::TYPE_ASSURANCE ? 'beneficiary' : 'passenger';
+
+    $wantsPassengerUpdate =
+        array_key_exists('passenger_id', $data) ||
+        array_key_exists('passenger_is_client', $data) ||
+        array_key_exists('passenger', $data);
+
+    if ($wantsPassengerUpdate) {
+
+        // 1) Si on force un passenger_id (participant existant de la réservation)
+        if (!empty($data['passenger_id'])) {
+            $p = $reservation->participants()
+                ->whereKey($data['passenger_id'])
+                ->firstOrFail();
+
+            // on s'assure du role
+            $p->update(['role' => $role]);
+
+            $reservation->passenger_id = $p->id;
+            $reservation->save();
+        } else {
+
+            // 2) Sinon, passenger_is_client = true => client = passager
+            $isClientPassenger = array_key_exists('passenger_is_client', $data)
+                ? (bool) $data['passenger_is_client']
+                : false;
+
+            if ($isClientPassenger) {
+
+                // on réutilise si possible un participant existant (role passager/bénéficiaire)
+                $p = $reservation->participants()
+                    ->where('role', $role)
+                    ->first();
+
+                if (!$p) {
+                    $p = $reservation->participants()->create([
+                        'nom' => $reservation->client->nom,
+                        'prenom' => $reservation->client->prenom,
+                        'role' => $role,
+                    ]);
+                } else {
+                    // optionnel : garder synchro avec le client
+                    $p->update([
+                        'nom' => $reservation->client->nom,
+                        'prenom' => $reservation->client->prenom,
+                        'role' => $role,
+                    ]);
+                }
+
+                $reservation->passenger_id = $p->id;
+                $reservation->save();
+
+            } else {
+
+                // 3) passenger = {...} => autre personne
+                if (!empty($data['passenger']) && is_array($data['passenger'])) {
+
+                    $incoming = $data['passenger'];
+
+                    // si un passenger existe déjà sur cette réservation, on le met à jour
+                    $p = $reservation->passenger;
+                    $canUpdateExisting =
+                        $p &&
+                        (int) $p->reservation_id === (int) $reservation->id;
+
+                    if ($canUpdateExisting) {
+                        $p->update([
+                            'nom' => $incoming['nom'] ?? $p->nom,
+                            'prenom' => $incoming['prenom'] ?? $p->prenom,
+                            'role' => $role,
+                        ]);
+                    } else {
+                        $p = $reservation->participants()->create([
+                            'nom' => $incoming['nom'],
+                            'prenom' => $incoming['prenom'] ?? null,
+                            'role' => $role,
+                        ]);
+                    }
+
+                    $reservation->passenger_id = $p->id;
+                    $reservation->save();
+                }
+            }
+        }
+    }
+
+    // 🔥 IMPORTANT : éviter que reservation->update() tente de gérer ces champs
+    unset($data['passenger_id'], $data['passenger_is_client'], $data['passenger']);
+}
+
     // Update reservation (champs communs / produit / forfait / montants etc.)
     $reservation->update($data);
 

@@ -36,6 +36,17 @@ class UpdateReservationRequest extends FormRequest
             'participants.*.prenom' => ['nullable', 'string', 'max:100'],
             'participants.*.age' => ['nullable', 'integer', 'min:0', 'max:120'],
 
+            // Passager / bénéficiaire (UPDATE)
+            'passenger_is_client' => ['sometimes', 'boolean'],
+
+            'passenger_id' => ['sometimes', 'nullable', 'exists:participants,id'],
+
+            'passenger' => ['sometimes', 'array'],
+            'passenger.nom' => ['required_with:passenger', 'string', 'max:100'],
+            'passenger.prenom' => ['nullable', 'string', 'max:100'],
+            'passenger.passport' => ['nullable', 'string', 'max:80'],
+            'passenger.sexe' => ['nullable', 'in:M,F'],
+
             // ✅ Champs vol (root) - tous optionnels + NULLABLE
             'ville_depart'  => ['sometimes', 'nullable', 'string', 'max:100'],
             'ville_arrivee' => ['sometimes', 'nullable', 'string', 'max:100'],
@@ -57,8 +68,8 @@ class UpdateReservationRequest extends FormRequest
             // Assurance details (conditionnel)
             'assurance_details' => ['sometimes', 'array'],
             'assurance_details.libelle' => ['required_with:assurance_details', 'string', 'max:255'],
-            'assurance_details.date_debut' => ['required_with:assurance_details', 'date'],
-            'assurance_details.date_fin' => ['nullable', 'date', 'after_or_equal:assurance_details.date_debut'],
+            'assurance_details.date_debut' => ['sometimes','nullable' , 'date'],
+            'assurance_details.date_fin' => ['sometimes','nullable', 'date'],
         ];
     }
 
@@ -162,6 +173,19 @@ class UpdateReservationRequest extends FormRequest
                     $v->errors()->add('forfait_id', "Une assurance ne doit pas être liée à un forfait.");
                 }
                 return;
+            }
+
+            if ($this->exists('passenger_id') && $this->input('passenger_id')) {
+                $pid = $this->input('passenger_id');
+                $reservation = $this->route('reservation');
+
+                $ok = \App\Models\Participant::where('id', $pid)
+                    ->where('reservation_id', $reservation->id)
+                    ->exists();
+
+                if (!$ok) {
+                    $v->errors()->add('passenger_id', "Ce passenger_id n'appartient pas à cette réservation.");
+                }
             }
 
             // -----------------------------
