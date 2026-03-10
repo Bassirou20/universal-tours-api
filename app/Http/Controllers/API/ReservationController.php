@@ -138,78 +138,121 @@ class ReservationController extends Controller
 
         // A) BILLET AVION (1 réservation = 1 passager)
         // A) BILLET AVION (1 réservation = 1 passager)
-        if ($type === Reservation::TYPE_BILLET_AVION) {
+       if ($type === Reservation::TYPE_BILLET_AVION) {
+            $reservation = Reservation::create([
+                'client_id' => $client->id,
+                'type' => Reservation::TYPE_BILLET_AVION,
+                'reference' => $reference,
+                'statut' => $statut,
+                'nombre_personnes' => $nombrePersonnes,
+                'montant_sous_total' => $montantSousTotal,
+                'montant_taxes' => $montantTaxes,
+                'montant_total' => $montantTotal,
+                'notes' => $data['notes'] ?? null,
+            ]);
 
-                    // 1️⃣ Créer la réservation SANS passenger_id
-                    $reservation = Reservation::create([
-                        'client_id' => $client->id,
-                        'type' => Reservation::TYPE_BILLET_AVION,
-                        'reference' => $reference,
-                        'statut' => $statut,
-                        'nombre_personnes' => 1,
-                        'montant_sous_total' => $montantSousTotal,
-                        'montant_taxes' => $montantTaxes,
-                        'montant_total' => $montantTotal,
-                        'notes' => $data['notes'] ?? null,
-                    ]);
+            $createdPassengers = collect();
 
-                    // 2️⃣ Déterminer le passager
-                    if (!empty($data['passenger_id'])) {
+            $passengerIsClient = array_key_exists('passenger_is_client', $data)
+                ? (bool) $data['passenger_is_client']
+                : true;
 
-                        $passenger = Participant::where('id', $data['passenger_id'])
-                            ->where('reservation_id', $reservation->id)
-                            ->firstOrFail();
+            $singlePassenger = !empty($data['passenger']) && is_array($data['passenger'])
+                ? $data['passenger']
+                : null;
 
-                    } elseif (!empty($data['passenger'])) {
+            $multiplePassengers = collect($data['passengers'] ?? [])
+                ->filter(fn ($p) => !empty(trim((string)($p['nom'] ?? ''))))
+                ->values();
 
-                        $passenger = $reservation->participants()->create([
-                            ...$data['passenger'],
-                            'role' => 'passenger',
-                        ]);
+            // 1) Si le payeur fait partie des voyageurs
+            if ($passengerIsClient) {
+                $createdPassengers->push(
+                    $reservation->participants()->create([
+                        'nom' => $client->nom,
+                        'prenom' => $client->prenom,
+                        'role' => 'passenger',
+                    ])
+                );
+            }
 
-                    } else {
-                        // client = passager
-                        $passenger = $reservation->participants()->create([
-                            'nom' => $client->nom,
-                            'prenom' => $client->prenom,
-                            'role' => 'passenger',
-                        ]);
-                    }
+            // 2) Cas billet simple
+            if ($singlePassenger) {
+                $createdPassengers->push(
+                    $reservation->participants()->create([
+                        'nom' => $singlePassenger['nom'],
+                        'prenom' => $singlePassenger['prenom'] ?? null,
+                        'passport' => $singlePassenger['passport'] ?? null,
+                        'sexe' => $singlePassenger['sexe'] ?? null,
+                        'role' => 'passenger',
+                    ])
+                );
+            }
 
-                    // 3️⃣ Lier le passager à la réservation
-                    $reservation->update([
-                        'passenger_id' => $passenger->id
-                    ]);
+            // 3) Cas billets multiples
+            foreach ($multiplePassengers as $p) {
+                $createdPassengers->push(
+                    $reservation->participants()->create([
+                        'nom' => $p['nom'],
+                        'prenom' => $p['prenom'] ?? null,
+                        'passport' => $p['passport'] ?? null,
+                        'sexe' => $p['sexe'] ?? null,
+                        'role' => 'passenger',
+                    ])
+                );
+            }
 
-                    // 4️⃣ Flight details
-                   if (!empty($data['flight_details']) && is_array($data['flight_details'])) {
-                        // on vérifie qu'il y a au moins une valeur non vide
-                        $hasAny = collect($data['flight_details'])->filter(function ($v) {
-                            return !is_null($v) && trim((string) $v) !== '';
-                        })->isNotEmpty();
+            // 4) Fallback de sécurité
+            if ($createdPassengers->isEmpty()) {
+                $createdPassengers->push(
+                    $reservation->participants()->create([
+                        'nom' => $client->nom,
+                        'prenom' => $client->prenom,
+                        'role' => 'passenger',
+                    ])
+                );
+            }
 
-                        if ($hasAny) {
-                            $res = collect($data['flight_details'])->only([
-                                'ville_depart','ville_arrivee','date_depart','date_arrivee','compagnie','pnr','classe'
-                            ])->toArray();
+            // 5) Le premier passenger devient le passenger principal
+            $reservation->update([
+                'passenger_id' => $createdPassengers->first()->id,
+                'nombre_personnes' => $createdPassengers->count(),
+            ]);
 
-                            $reservation->flightDetails()->create($res);
-                        }
-                    }
-                    // 5️⃣ Facture
-                    $this->ensureFactureEmise($reservation);
+            // 6) Flight details
+            if (!empty($data['flight_details']) && is_array($data['flight_details'])) {
+                $hasAny = collect($data['flight_details'])->filter(function ($v) {
+                    return !is_null($v) && trim((string) $v) !== '';
+                })->isNotEmpty();
 
-                    return response()->json(
-                        $reservation->load([
-                            'client',
-                            'passenger',
-                            'flightDetails',
-                            'factures.paiements'
-                        ]),
-                        Response::HTTP_CREATED
-                    );
+                if ($hasAny) {
+                    $res = collect($data['flight_details'])->only([
+                        'ville_depart',
+                        'ville_arrivee',
+                        'date_depart',
+                        'date_arrivee',
+                        'compagnie',
+                        'pnr',
+                        'classe'
+                    ])->toArray();
+
+                    $reservation->flightDetails()->create($res);
                 }
+            }
 
+            $this->ensureFactureEmise($reservation);
+
+            return response()->json(
+                $reservation->load([
+                    'client',
+                    'participants',
+                    'passenger',
+                    'flightDetails',
+                    'factures.paiements'
+                ]),
+                Response::HTTP_CREATED
+            );
+        }
                 if ($type === Reservation::TYPE_ASSURANCE) {
 
             $reservation = Reservation::create([
@@ -608,6 +651,39 @@ if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_ASSU
     }
 
     // 🔥 IMPORTANT : éviter que reservation->update() tente de gérer ces champs
+    unset($data['passenger_id'], $data['passenger_is_client'], $data['passenger']);
+}
+
+// ✅ MAJ multi-passagers (billet_avion)
+if ($finalType === Reservation::TYPE_BILLET_AVION && array_key_exists('passengers', $data)) {
+
+    $incoming = is_array($data['passengers']) ? $data['passengers'] : [];
+
+    // supprime les anciens passagers
+    $reservation->participants()->where('role', 'passenger')->delete();
+
+    $created = [];
+    foreach ($incoming as $p) {
+        if (empty($p['nom'])) continue;
+
+        $created[] = $reservation->participants()->create([
+            'nom' => $p['nom'],
+            'prenom' => $p['prenom'] ?? null,
+            'passport' => $p['passport'] ?? null,
+            'sexe' => $p['sexe'] ?? null,
+            'role' => 'passenger',
+        ]);
+    }
+
+    // met à jour passenger_id (principal) + nombre_personnes
+    $reservation->passenger_id = !empty($created) ? $created[0]->id : null;
+    $reservation->nombre_personnes = max(1, count($created));
+    $reservation->save();
+
+    // ne pas laisser reservation->update() tenter de sauver passengers
+    unset($data['passengers']);
+
+    // ✅ Si on a envoyé passengers[], on ignore l’ancienne logique passenger/passenger_id
     unset($data['passenger_id'], $data['passenger_is_client'], $data['passenger']);
 }
 

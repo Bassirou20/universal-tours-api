@@ -164,6 +164,11 @@ class Reservation extends Model
     {
         return $this->hasMany(\App\Models\Facture::class);
     }
+
+        public function passengers(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->participants()->where('role', 'passenger');
+    }
 //     public function factures()
 // {
 //     return $this->hasMany(\App\Models\Facture::class);
