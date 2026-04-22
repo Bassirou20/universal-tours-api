@@ -42,7 +42,7 @@ class StoreReservationRequest extends FormRequest
             /* ================= COMMUN ================= */
             'nombre_personnes' => 'required|integer|min:1',
             'montant_sous_total' => 'nullable|numeric|min:0',
-            'montant_taxes' => 'nullable|numeric|min:0',
+            'montant_taxes' => 'nullable|numeric',
             'montant_total' => 'required|numeric|min:0',
             'notes' => 'nullable|string',
 
