@@ -57,9 +57,9 @@ class UpdateReservationRequest extends FormRequest
             'classe'        => ['sometimes', 'nullable', 'string', 'max:50'],
 
             // Montants
-            'montant_sous_total' => ['sometimes', 'nullable', 'numeric', 'min:0'],
-            'montant_taxes'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
-            'montant_total'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            'montant_sous_total' => ['sometimes', 'nullable', 'numeric'],
+            'montant_taxes'      => ['sometimes', 'nullable', 'numeric'],
+            'montant_total'      => ['sometimes', 'nullable', 'numeric'],
 
             // Autres
             'nombre_personnes' => ['sometimes', 'nullable', 'integer', 'min:1'],
