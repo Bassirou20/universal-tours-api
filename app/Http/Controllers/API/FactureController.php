@@ -60,7 +60,6 @@ class FactureController extends Controller
 
     public function store(Request $request, \App\Models\Reservation $reservation)
     {
-        // Interdire de facturer une réservation annulée
         if ($reservation->statut === \App\Models\Reservation::STATUT_ANNULE) {
             return response()->json([
                 'message' => "Impossible de créer une facture pour une réservation annulée.",
@@ -74,6 +73,19 @@ class FactureController extends Controller
         ]);
 
         return \DB::transaction(function () use ($reservation, $data) {
+            // Idempotence : retourner la facture existante non-annulée plutôt qu'en créer une nouvelle
+            $existing = $reservation->factures()
+                ->whereNotIn('statut', ['annule'])
+                ->latest('id')
+                ->first();
+
+            if ($existing) {
+                return response()->json(
+                    $existing->load(['reservation.client', 'paiements']),
+                    Response::HTTP_OK
+                );
+            }
+
             $montantTotal = (float) ($data['montant_total'] ?? $reservation->montant_total);
 
             if ($montantTotal <= 0) {
@@ -94,8 +106,48 @@ class FactureController extends Controller
                 'pdf_path'           => null,
             ]);
 
-            return response()->json($facture, Response::HTTP_CREATED);
+            return response()->json(
+                $facture->load(['reservation.client', 'paiements']),
+                Response::HTTP_CREATED
+            );
         });
+    }
+
+    public function emettre(Facture $facture)
+    {
+        if ($facture->statut === 'annule') {
+            return response()->json(['message' => "Impossible d'émettre une facture annulée."], 422);
+        }
+
+        if ($facture->statut === 'emis') {
+            return response()->json(
+                $facture->load(['reservation.client', 'paiements']),
+                Response::HTTP_OK
+            );
+        }
+
+        $facture->update(['statut' => 'emis']);
+
+        return response()->json([
+            'message' => 'Facture émise.',
+            'facture' => $facture->fresh()->load(['reservation.client', 'paiements']),
+        ]);
+    }
+
+    public function annulerFacture(Facture $facture)
+    {
+        if ($facture->paiements()->where('statut', 'recu')->exists()) {
+            return response()->json([
+                'message' => "Impossible d'annuler une facture avec des paiements validés.",
+            ], 422);
+        }
+
+        $facture->update(['statut' => 'annule']);
+
+        return response()->json([
+            'message' => 'Facture annulée.',
+            'facture' => $facture->fresh()->load(['reservation.client', 'paiements']),
+        ]);
     }
 
     /**

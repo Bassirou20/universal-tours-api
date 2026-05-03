@@ -57,11 +57,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     // Factures + PDF
     Route::get('factures', [FactureController::class, 'index']);
-    Route::post('reservations/{reservation}/factures', [FactureController::class, 'store']); // créer facture
+    Route::get('factures/{facture}', [FactureController::class, 'show']);
+    Route::post('reservations/{reservation}/factures', [FactureController::class, 'store']);
     Route::post('factures/{facture}/emettre', [FactureController::class, 'emettre']);
-    Route::post('factures/{facture}/annuler', [FactureController::class, 'annuler']);
-    Route::post('factures/{facture}/pdf', [FactureController::class, 'pdfStream']);
+    Route::post('factures/{facture}/annuler', [FactureController::class, 'annulerFacture']);
     Route::get('factures/{facture}/pdf', [FactureController::class, 'pdf']);
+    Route::post('factures/{facture}/pdf', [FactureController::class, 'pdfStream']);
     Route::delete('/factures/{facture}', [FactureController::class, 'destroy']);
 
     Route::apiResource('depenses', DepenseController::class);
