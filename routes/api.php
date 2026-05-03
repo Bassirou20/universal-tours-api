@@ -62,6 +62,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('factures/{facture}/annuler', [FactureController::class, 'annuler']);
     Route::post('factures/{facture}/pdf', [FactureController::class, 'pdfStream']);
     Route::get('factures/{facture}/pdf', [FactureController::class, 'pdf']);
+    Route::delete('/factures/{facture}', [FactureController::class, 'destroy']);
 
     Route::apiResource('depenses', DepenseController::class);
 

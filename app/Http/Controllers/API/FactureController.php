@@ -5,8 +5,10 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Facture;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\Response;
 
 class FactureController extends Controller
 {
@@ -34,7 +36,29 @@ class FactureController extends Controller
         return $q->paginate($perPage);
     }
 
-     public function store(Request $request, \App\Models\Reservation $reservation)
+    // ✅ CORRECTION : méthode show() ajoutée — c'était la cause du "Impossible de charger les détails"
+    public function show($id)
+    {
+        $facture = Facture::with([
+            'reservation.client',
+            'reservation.flightDetails',
+            'reservation.assuranceDetails',
+            'reservation.participants',
+            'reservation.passenger',
+            'reservation.forfait',
+            'reservation.produit',
+            'paiements',
+        ])->findOrFail($id);
+
+        $pay = $this->payMeta($facture);
+
+        return response()->json(array_merge(
+            $facture->toArray(),
+            ['pay_meta' => $pay]
+        ));
+    }
+
+    public function store(Request $request, \App\Models\Reservation $reservation)
     {
         // Interdire de facturer une réservation annulée
         if ($reservation->statut === \App\Models\Reservation::STATUT_ANNULE) {
@@ -45,12 +69,11 @@ class FactureController extends Controller
         }
 
         $data = $request->validate([
-            'date_facture'   => 'nullable|date',
-            'montant_total'  => 'nullable|numeric|min:0.01', // optionnel
+            'date_facture'  => 'nullable|date',
+            'montant_total' => 'nullable|numeric|min:0.01',
         ]);
 
         return \DB::transaction(function () use ($reservation, $data) {
-            // Si montant_total pas fourni, on prend celui de la réservation (recommandé)
             $montantTotal = (float) ($data['montant_total'] ?? $reservation->montant_total);
 
             if ($montantTotal <= 0) {
@@ -61,72 +84,59 @@ class FactureController extends Controller
             }
 
             $facture = \App\Models\Facture::create([
-                'reservation_id'      => $reservation->id,
-                'numero'              => Facture::generateNumero(),
-                'date_facture'        => $data['date_facture'] ?? now()->toDateString(),
-
-                // TVA=0 => sous_total = total, taxes = 0
-                'montant_sous_total'  => $montantTotal,
-                'montant_taxes'       => 0,
-                'montant_total'       => $montantTotal,
-
-                'statut'              => 'brouillon',
-                'pdf_path'            => null,
+                'reservation_id'     => $reservation->id,
+                'numero'             => Facture::generateNumero(),
+                'date_facture'       => $data['date_facture'] ?? now()->toDateString(),
+                'montant_sous_total' => $montantTotal,
+                'montant_taxes'      => 0,
+                'montant_total'      => $montantTotal,
+                'statut'             => 'brouillon',
+                'pdf_path'           => null,
             ]);
 
-            return response()->json($facture, \Symfony\Component\HttpFoundation\Response::HTTP_CREATED);
+            return response()->json($facture, Response::HTTP_CREATED);
         });
     }
 
     /**
-     * Calcule:
-     * - total
-     * - paid (somme des paiements "recu")
-     * - remaining
-     * - percent
-     * - label: NON PAYÉ / PARTIELLEMENT PAYÉ / PAYÉ
+     * Calcule total / paid / remaining / percent / label
      */
     private function payMeta(Facture $facture): array
     {
         $total = (float) ($facture->montant_total ?? 0);
 
-        // ✅ On compte uniquement les paiements reçus
         $paid = (float) $facture->paiements()
             ->where('statut', 'recu')
             ->sum('montant');
 
-        // Sécurité
         if ($paid < 0) $paid = 0;
         if ($total > 0 && $paid > $total) $paid = $total;
 
         $remaining = max(0, $total - $paid);
+        $percent   = $total > 0 ? (int) round(($paid / $total) * 100) : 0;
 
-        $percent = $total > 0 ? (int) round(($paid / $total) * 100) : 0;
-
-        if ($paid <= 0.00001) $label = 'NON PAYÉ';
+        if ($paid <= 0.00001)          $label = 'NON PAYÉ';
         elseif ($paid + 0.00001 < $total) $label = 'PARTIELLEMENT PAYÉ';
-        else $label = 'PAYÉ';
+        else                            $label = 'PAYÉ';
 
         return [
-            'total' => $total,
-            'paid' => $paid,
+            'total'     => $total,
+            'paid'      => $paid,
             'remaining' => $remaining,
-            'percent' => $percent,
-            'label' => $label,
+            'percent'   => $percent,
+            'label'     => $label,
         ];
     }
 
     /**
-     * Stream PDF (route type: GET /factures/{facture}/pdf-stream)
+     * Stream PDF — GET /factures/{facture}/pdf-stream
      */
     public function pdfStream(Facture $facture)
     {
-        // (optionnel) bloquer si annulée
         if (strtolower((string) $facture->statut) === 'annule') {
             return response()->json(['message' => "Impossible de générer le PDF d'une facture annulée."], 422);
         }
 
-        // Charger les relations utiles
         $facture->load([
             'reservation.client',
             'reservation.produit',
@@ -135,22 +145,17 @@ class FactureController extends Controller
             'paiements',
         ]);
 
-        // ✅ Calcul payé/reste/%/label
-        $pay = $this->payMeta($facture);
-
-        // ✅ Logo DomPDF : chemin absolu recommandé
-        // Mets ton logo dans public/assets/logounivtours.png
+        $pay      = $this->payMeta($facture);
         $logoPath = public_path('assets/logounivtours.png');
 
         $pdf = Pdf::loadView('pdf.facture', [
-            'facture' => $facture,
-            'pay' => $pay,
+            'facture'  => $facture,
+            'pay'      => $pay,
             'logoPath' => $logoPath,
         ])->setPaper('a4');
 
         $filename = "facture-{$facture->numero}.pdf";
 
-        // (optionnel) sauvegarde le PDF et stocke le chemin en DB si tu as pdf_path
         try {
             $path = "factures/{$filename}";
             Storage::disk('public')->put($path, $pdf->output());
@@ -165,7 +170,7 @@ class FactureController extends Controller
     }
 
     /**
-     * PDF via ID (route type: GET /factures/{id}/pdf)
+     * PDF via ID — GET /factures/{id}/pdf
      */
     public function pdf($id)
     {
@@ -181,15 +186,41 @@ class FactureController extends Controller
             return response()->json(['message' => "Impossible de générer le PDF d'une facture annulée."], 422);
         }
 
-        $pay = $this->payMeta($facture);
+        $pay      = $this->payMeta($facture);
         $logoPath = public_path('assets/logounivtours.png');
 
         $pdf = Pdf::loadView('pdf.facture', [
-            'facture' => $facture,
-            'pay' => $pay,
+            'facture'  => $facture,
+            'pay'      => $pay,
             'logoPath' => $logoPath,
         ])->setPaper('a4');
 
         return $pdf->stream("facture-{$facture->numero}.pdf", ['Attachment' => false]);
     }
+
+    public function destroy(Facture $facture)
+{
+    if ($facture->paiements()->where('statut', 'recu')->exists()) {
+        return response()->json([
+            'message' => "Impossible de supprimer une facture contenant des paiements validés."
+        ], 422);
+    }
+
+    return DB::transaction(function () use ($facture) {
+
+        $facture->paiements()->delete();
+
+        if (!empty($facture->pdf_path) &&
+            Storage::disk('public')->exists($facture->pdf_path)) {
+            Storage::disk('public')->delete($facture->pdf_path);
+        }
+
+        $facture->delete();
+
+        return response()->json([
+            'message' => 'Facture supprimée avec succès.'
+        ]);
+    });
+}
+
 }
