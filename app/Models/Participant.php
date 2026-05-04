@@ -16,6 +16,7 @@ class Participant extends Model
         'age',
         'passeport',
         'remarques',
+        'role',
         'produit_id',
         'reservation_id',
     ];

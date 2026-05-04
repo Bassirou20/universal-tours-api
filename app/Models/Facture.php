@@ -38,9 +38,12 @@ class Facture extends Model
         return $this->hasMany(Paiement::class);
     }
 
-      public static function generateNumero(): string
+    public static function generateNumero(): string
     {
-        // Format: FAC-YYYYMMDD-XXXXXX
-        return 'FAC-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+        do {
+            $numero = 'FAC-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+        } while (static::where('numero', $numero)->exists());
+
+        return $numero;
     }
 }

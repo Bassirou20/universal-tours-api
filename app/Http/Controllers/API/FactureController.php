@@ -29,6 +29,11 @@ class FactureController extends Controller
             $q->where('statut', $st);
         }
 
+        // ?follow=1 → factures impayées ou partiellement payées (vue "à suivre")
+        if ($request->boolean('follow')) {
+            $q->whereIn('statut', ['impayee', 'emis', 'partielle', 'paye_partiellement']);
+        }
+
         if ($clientId = $request->get('client_id')) {
             $q->whereHas('reservation', fn ($qq) => $qq->where('client_id', $clientId));
         }
@@ -250,29 +255,42 @@ class FactureController extends Controller
         return $pdf->stream("facture-{$facture->numero}.pdf", ['Attachment' => false]);
     }
 
-    public function destroy(Facture $facture)
-{
-    if ($facture->paiements()->where('statut', 'recu')->exists()) {
-        return response()->json([
-            'message' => "Impossible de supprimer une facture contenant des paiements validés."
-        ], 422);
-    }
+    public function destroy(Request $request, Facture $facture)
+    {
+        $force    = $request->boolean('force', false);
+        $isAdmin  = $request->user()?->role === 'admin';
+        $hasPaid  = $facture->paiements()->where('statut', 'recu')->exists();
 
-    return DB::transaction(function () use ($facture) {
-
-        $facture->paiements()->delete();
-
-        if (!empty($facture->pdf_path) &&
-            Storage::disk('public')->exists($facture->pdf_path)) {
-            Storage::disk('public')->delete($facture->pdf_path);
+        // Blocage normal : paiements encaissés et pas de forçage demandé
+        if ($hasPaid && !$force) {
+            $count  = $facture->paiements()->where('statut', 'recu')->count();
+            $montant = $facture->paiements()->where('statut', 'recu')->sum('montant');
+            return response()->json([
+                'message'          => "Cette facture contient {$count} paiement(s) encaissé(s) pour un total de {$montant} XOF.",
+                'has_paid'         => true,
+                'paiements_count'  => $count,
+                'paiements_total'  => $montant,
+            ], 422);
         }
 
-        $facture->delete();
+        // Forçage : réservé aux admins
+        if ($force && !$isAdmin) {
+            return response()->json([
+                'message' => "Seul un administrateur peut forcer la suppression d'une facture avec des paiements.",
+            ], 403);
+        }
 
-        return response()->json([
-            'message' => 'Facture supprimée avec succès.'
-        ]);
-    });
-}
+        return DB::transaction(function () use ($facture) {
+            $facture->paiements()->delete();
+
+            if (!empty($facture->pdf_path) && Storage::disk('public')->exists($facture->pdf_path)) {
+                Storage::disk('public')->delete($facture->pdf_path);
+            }
+
+            $facture->delete();
+
+            return response()->json(['message' => 'Facture supprimée avec succès.']);
+        });
+    }
 
 }

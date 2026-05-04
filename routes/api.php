@@ -13,6 +13,7 @@ use App\Http\Controllers\API\ForfaitController;
 use App\Http\Controllers\API\PaiementController;
 use App\Http\Controllers\API\FournisseurController;
 use App\Http\Controllers\API\UserController;
+use App\Http\Controllers\API\AvoirController;
 
 // =========================
 // Public
@@ -67,10 +68,19 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     Route::apiResource('depenses', DepenseController::class);
 
+    // Avoirs clients (wallet / crédit prépayé)
+    Route::get('avoirs', [AvoirController::class, 'index']);
+    Route::post('avoirs', [AvoirController::class, 'store']);
+    Route::delete('avoirs/{avoir}', [AvoirController::class, 'destroy']);
+    Route::get('clients/{client}/avoirs', [AvoirController::class, 'clientHistory']);
+    Route::get('clients/{client}/solde-avoir', [AvoirController::class, 'solde']);
 
-    // Paiements (création rattachée facture)
+
+    // Paiements
     Route::get('dashboard', [DashboardController::class, 'index']);
     Route::post('factures/{facture}/paiements', [PaiementController::class, 'store']);
+    Route::put('paiements/{paiement}',    [PaiementController::class, 'update']);
+    Route::delete('paiements/{paiement}', [PaiementController::class, 'destroy']);
 
     // =========================
     // Admin only

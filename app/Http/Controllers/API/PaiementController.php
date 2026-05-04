@@ -72,4 +72,59 @@ class PaiementController extends Controller
             ], Response::HTTP_CREATED);
         });
     }
+
+    public function update(Request $request, Paiement $paiement)
+    {
+        $data = $request->validate([
+            'montant'       => 'sometimes|numeric|min:1',
+            'mode_paiement' => 'sometimes|string|max:50',
+            'reference'     => 'nullable|string|max:100',
+            'statut'        => 'nullable|in:recu,en_attente,annule',
+            'date_paiement' => 'nullable|date',
+            'notes'         => 'nullable|string|max:1000',
+        ]);
+
+        return DB::transaction(function () use ($paiement, $data) {
+            $paiement->update($data);
+
+            $facture = $paiement->facture;
+            $facture->load('paiements');
+            $paid  = (float) $facture->paiements->whereIn('statut', ['recu'])->sum('montant');
+            $total = (float) $facture->montant_total;
+
+            if ($facture->statut !== 'annule') {
+                if ($paid <= 0)                       $newStatut = 'emis';
+                elseif ($paid + 0.00001 >= $total)    $newStatut = 'paye_totalement';
+                else                                   $newStatut = 'paye_partiellement';
+                $facture->update(['statut' => $newStatut]);
+            }
+
+            return response()->json([
+                'message'  => 'Paiement mis à jour.',
+                'paiement' => $paiement->fresh(),
+                'facture'  => $facture->fresh()->load(['paiements']),
+            ]);
+        });
+    }
+
+    public function destroy(Paiement $paiement)
+    {
+        return DB::transaction(function () use ($paiement) {
+            $facture = $paiement->facture;
+            $paiement->delete();
+
+            $facture->load('paiements');
+            $paid  = (float) $facture->paiements->whereIn('statut', ['recu'])->sum('montant');
+            $total = (float) $facture->montant_total;
+
+            if ($facture->statut !== 'annule') {
+                if ($paid <= 0)                       $newStatut = 'emis';
+                elseif ($paid + 0.00001 >= $total)    $newStatut = 'paye_totalement';
+                else                                   $newStatut = 'paye_partiellement';
+                $facture->update(['statut' => $newStatut]);
+            }
+
+            return response()->json(['message' => 'Paiement supprimé.']);
+        });
+    }
 }

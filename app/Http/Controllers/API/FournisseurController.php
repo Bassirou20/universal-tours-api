@@ -13,12 +13,21 @@ class FournisseurController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
-    public function index()
+    public function index(Request $request)
     {
-        // Récupérer tous les fournisseurs
-        $fournisseurs = Fournisseur::all();
+        $perPage = (int) $request->get('per_page', 10);
 
-        return response()->json($fournisseurs);
+        $q = Fournisseur::query()->orderByDesc('id');
+
+        if ($search = $request->get('search')) {
+            $q->where(function ($qq) use ($search) {
+                $qq->where('nom', 'like', "%$search%")
+                   ->orWhere('email', 'like', "%$search%")
+                   ->orWhere('telephone', 'like', "%$search%");
+            });
+        }
+
+        return $q->paginate($perPage);
     }
 
     /**

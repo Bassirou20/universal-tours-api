@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
@@ -69,41 +70,45 @@ public function me(Request $request)
         return response()->json(['token' => $token]);
     }
 
-    // Réinitialisation de mot de passe
+    // Envoyer le lien de réinitialisation
     public function sendResetLink(Request $request)
     {
         $request->validate(['email' => 'required|email']);
-        $user = User::where('email', $request->email)->first();
-        
-        if ($user) {
-            $user->sendPasswordResetNotification();
-        }
 
-        return response()->json(['message' => 'If this email exists, we have sent a reset link.']);
+        // Laravel génère un token, le stocke en BD et envoie l'email automatiquement
+        $status = Password::sendResetLink($request->only('email'));
+
+        return response()->json([
+            'message' => 'Si cet email existe, un lien de réinitialisation a été envoyé.',
+        ]);
     }
 
-    // Réinitialiser le mot de passe
+    // Réinitialiser le mot de passe avec validation du token
     public function resetPassword(Request $request)
     {
         $request->validate([
-            'email' => 'required|email',
-            'password' => 'required|string|confirmed',
-            'token' => 'required|string',
+            'email'                 => 'required|email',
+            'token'                 => 'required|string',
+            'password'              => 'required|string|min:6|confirmed',
+            'password_confirmation' => 'required|string',
         ]);
 
-        // Processus de réinitialisation de mot de passe
-        $user = User::where('email', $request->email)->first();
+        // Password::reset() vérifie que le token correspond à l'email en BD et qu'il n'a pas expiré
+        $status = Password::reset(
+            $request->only('email', 'password', 'password_confirmation', 'token'),
+            function (User $user, string $password) {
+                $user->forceFill(['password' => Hash::make($password)])->save();
+                // Révoquer tous les tokens Sanctum existants pour forcer une reconnexion
+                $user->tokens()->delete();
+            }
+        );
 
-        if (!$user) {
-            return response()->json(['message' => 'Email not found'], 404);
+        if ($status !== Password::PASSWORD_RESET) {
+            return response()->json([
+                'message' => 'Token invalide ou expiré. Veuillez refaire une demande de réinitialisation.',
+            ], 422);
         }
 
-        // Logique pour valider le token de réinitialisation du mot de passe et changer le mot de passe
-        // Tu peux utiliser un package Laravel pour la réinitialisation de mot de passe ou le faire manuellement
-        // Exemple avec un simple changement
-        $user->password = Hash::make($request->password);
-        $user->save();
-
-        return response()->json(['message' => 'Password reset successfully']);
+        return response()->json(['message' => 'Mot de passe réinitialisé avec succès.']);
     }
 }

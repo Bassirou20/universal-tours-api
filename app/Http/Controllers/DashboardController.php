@@ -107,6 +107,7 @@ class DashboardController extends Controller
             ->get();
 
         $facturesToFollow = Facture::query()
+            ->with(['reservation.client:id,prenom,nom'])
             ->orderByDesc('created_at')
             ->whereIn('statut', ['impayee', 'partielle', 'paye_partiellement'])
             ->limit(6)
