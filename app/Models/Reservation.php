@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Traits\LogsActivity;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -11,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Reservation extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, LogsActivity;
 
     public const TYPE_BILLET_AVION = 'billet_avion';
     public const TYPE_EVENEMENT    = 'evenement';
@@ -19,6 +20,7 @@ class Reservation extends Model
     public const TYPE_VOITURE      = 'voiture';
     public const TYPE_ASSURANCE    = 'assurance';
     public const TYPE_FORFAIT      = 'forfait';
+    public const TYPE_EVISA        = 'evisa';
 
     public const STATUT_EN_ATTENTE = 'en_attente';
     public const STATUT_CONFIRME   = 'confirmee';
@@ -31,6 +33,7 @@ class Reservation extends Model
         self::TYPE_VOITURE,
         self::TYPE_FORFAIT,
         self::TYPE_ASSURANCE,
+        self::TYPE_EVISA,
     ];
 
     protected $fillable = [
@@ -84,6 +87,7 @@ class Reservation extends Model
             self::TYPE_VOITURE      => "Location de voiture",
             self::TYPE_FORFAIT      => "Forfait",
             self::TYPE_ASSURANCE    => "Assurance",
+            self::TYPE_EVISA        => "E-Visa / Assistance visa",
             default                 => "Inconnu",
         };
     }
@@ -109,6 +113,7 @@ class Reservation extends Model
     public function isEvenement(): bool   { return $this->type === self::TYPE_EVENEMENT; }
     public function isHotel(): bool       { return $this->type === self::TYPE_HOTEL; }
     public function isVoiture(): bool     { return $this->type === self::TYPE_VOITURE; }
+    public function isEvisa(): bool       { return $this->type === self::TYPE_EVISA; }
 
     /* Relations */
     public function produit(): BelongsTo
@@ -124,6 +129,11 @@ class Reservation extends Model
     public function assuranceDetails(): HasOne
     {
         return $this->hasOne(\App\Models\ReservationAssurance::class);
+    }
+
+    public function evisaDetails(): HasOne
+    {
+        return $this->hasOne(\App\Models\ReservationEvisaDetail::class);
     }
 
     public function forfait(): BelongsTo
@@ -144,6 +154,11 @@ class Reservation extends Model
     public function factures(): HasMany
     {
         return $this->hasMany(\App\Models\Facture::class);
+    }
+
+    public function penalites(): HasMany
+    {
+        return $this->hasMany(\App\Models\ReservationPenalite::class)->orderByDesc('imposed_at');
     }
 
     public function passengers(): HasMany

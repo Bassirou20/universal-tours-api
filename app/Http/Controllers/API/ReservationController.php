@@ -11,9 +11,11 @@ use App\Models\Forfait;
 use App\Models\Participant;
 use App\Models\Reservation;
 use App\Models\Produit;
+use App\Exports\ReservationsExport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Maatwebsite\Excel\Facades\Excel;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Str;
 
@@ -36,9 +38,14 @@ class ReservationController extends Controller
             'passenger',
             'flightDetails',
             'assuranceDetails',
+            'evisaDetails',
             'factures.paiements',
         ])
         ->orderByDesc('created_at');
+
+    if ($request->filled('client_id')) {
+        $query->where('client_id', (int) $request->get('client_id'));
+    }
 
     if ($request->filled('type')) {
         $query->where('type', $request->get('type'));
@@ -57,6 +64,16 @@ class ReservationController extends Controller
         // ignore si format invalide
     }
 }
+
+    // Filtre par jour exact (ex: ?date=2026-05-16) — réservations créées ce jour-là
+    if ($request->filled('date')) {
+        try {
+            $day = \Carbon\Carbon::parse($request->get('date'))->toDateString();
+            $query->whereDate('created_at', $day);
+        } catch (\Exception $e) {
+            // ignore si format invalide
+        }
+    }
 
 
     // ✅ AJOUT: search
@@ -129,8 +146,10 @@ class ReservationController extends Controller
 
         $participants = $data['participants'] ?? [];
 
-        // ✅ Tu veux confirmé par défaut
-        $statut = Reservation::STATUT_CONFIRME;
+        // Statut : confirmée par défaut, mais peut être créée comme "devis" (en_attente)
+        // si le client envoie as_devis=true (paramètre optionnel ignoré sinon par la validation)
+        $asDevis = (bool)($data['as_devis'] ?? request()->boolean('as_devis'));
+        $statut = $asDevis ? Reservation::STATUT_EN_ATTENTE : Reservation::STATUT_CONFIRME;
 
         /* -------------------------------------------------
         | 3) Création selon type
@@ -326,7 +345,94 @@ class ReservationController extends Controller
         }
 
 
-        // B) FORFAIT
+        // B) EVISA
+        if ($type === Reservation::TYPE_EVISA) {
+
+            $reservation = Reservation::create([
+                'client_id'          => $client->id,
+                'type'               => Reservation::TYPE_EVISA,
+                'reference'          => $reference,
+                'statut'             => $statut,
+                'nombre_personnes'   => $nombrePersonnes,
+                'montant_sous_total' => $montantSousTotal,
+                'montant_taxes'      => $montantTaxes,
+                'montant_total'      => $montantTotal,
+                'notes'              => $data['notes'] ?? null,
+            ]);
+
+            // Demandeurs : même logique que billet avion (passenger_is_client + passengers[])
+            $createdDemandeurs = collect();
+
+            $passengerIsClient = array_key_exists('passenger_is_client', $data)
+                ? (bool) $data['passenger_is_client']
+                : true;
+
+            $multiplePassengers = collect($data['passengers'] ?? [])
+                ->filter(fn ($p) => !empty(trim((string)($p['nom'] ?? ''))))
+                ->values();
+
+            if ($passengerIsClient) {
+                $createdDemandeurs->push(
+                    $reservation->participants()->create([
+                        'nom'    => $client->nom,
+                        'prenom' => $client->prenom,
+                        'role'   => 'demandeur',
+                    ])
+                );
+            }
+
+            foreach ($multiplePassengers as $p) {
+                $createdDemandeurs->push(
+                    $reservation->participants()->create([
+                        'nom'      => $p['nom'],
+                        'prenom'   => $p['prenom'] ?? null,
+                        'passport' => $p['passport'] ?? null,
+                        'role'     => 'demandeur',
+                    ])
+                );
+            }
+
+            if ($createdDemandeurs->isEmpty()) {
+                $createdDemandeurs->push(
+                    $reservation->participants()->create([
+                        'nom'    => $client->nom,
+                        'prenom' => $client->prenom,
+                        'role'   => 'demandeur',
+                    ])
+                );
+            }
+
+            $reservation->update([
+                'passenger_id'     => $createdDemandeurs->first()->id,
+                'nombre_personnes' => $createdDemandeurs->count(),
+            ]);
+
+            // Détails e-visa
+            if (!empty($data['evisa_details']) && is_array($data['evisa_details'])) {
+                $ed = $data['evisa_details'];
+                $reservation->evisaDetails()->create([
+                    'pays_destination' => $ed['pays_destination'],
+                    'type_visa'        => $ed['type_visa'] ?? null,
+                    'date_voyage'      => $ed['date_voyage'] ?? null,
+                    'duree_sejour'     => $ed['duree_sejour'] ?? null,
+                ]);
+            }
+
+            $this->ensureFactureEmise($reservation);
+
+            return response()->json(
+                $reservation->load([
+                    'client',
+                    'participants',
+                    'passenger',
+                    'evisaDetails',
+                    'factures.paiements',
+                ]),
+                Response::HTTP_CREATED
+            );
+        }
+
+        // C) FORFAIT
         if ($type === Reservation::TYPE_FORFAIT) {
 
             $forfait = Forfait::findOrFail($data['forfait_id']);
@@ -401,6 +507,8 @@ class ReservationController extends Controller
         // ✅ Facture auto (1 seule fois)
         $this->ensureFactureEmise($reservation);
 
+        // Note : la notification "reservation_created" est gérée par ReservationObserver
+
         return response()->json(
             $reservation->load(['client', 'produit', 'forfait', 'participants', 'factures.paiements']),
             Response::HTTP_CREATED
@@ -424,7 +532,11 @@ class ReservationController extends Controller
         'passenger',
         'flightDetails',
         'assuranceDetails',
+        'evisaDetails',
         'factures.paiements',
+        'penalites.imposedBy:id,prenom,nom',
+        'penalites.avoir',
+        'penalites.facture',
     ])->findOrFail($id);
 
     return response()->json($reservation);
@@ -526,6 +638,44 @@ class ReservationController extends Controller
         unset($data['assurance_details']);
     }
 
+    // ✅ MAJ e-visa details
+    if ($finalType === Reservation::TYPE_EVISA) {
+        if (array_key_exists('evisa_details', $data) && is_array($data['evisa_details'])) {
+            $incoming = $data['evisa_details'];
+            $existing = $reservation->evisaDetails;
+
+            $hasAny = false;
+            foreach (['pays_destination', 'type_visa', 'date_voyage', 'duree_sejour'] as $k) {
+                if (array_key_exists($k, $incoming)) { $hasAny = true; break; }
+            }
+
+            if ($hasAny) {
+                $reservation->evisaDetails()->updateOrCreate(
+                    ['reservation_id' => $reservation->id],
+                    [
+                        'pays_destination' => array_key_exists('pays_destination', $incoming)
+                            ? ($incoming['pays_destination'] ?: '')
+                            : ($existing->pays_destination ?? ''),
+
+                        'type_visa' => array_key_exists('type_visa', $incoming)
+                            ? ($incoming['type_visa'] ?: null)
+                            : ($existing->type_visa ?? null),
+
+                        'date_voyage' => array_key_exists('date_voyage', $incoming)
+                            ? ($incoming['date_voyage'] ?: null)
+                            : ($existing->date_voyage ?? null),
+
+                        'duree_sejour' => array_key_exists('duree_sejour', $incoming)
+                            ? ($incoming['duree_sejour'] ?: null)
+                            : ($existing->duree_sejour ?? null),
+                    ]
+                );
+            }
+        }
+
+        unset($data['evisa_details']);
+    }
+
     // ✅ Sync participants si le front les envoie (FORFAIT / EVENEMENT)
     if (array_key_exists('participants', $data)) {
 
@@ -560,11 +710,15 @@ class ReservationController extends Controller
     }
 
 // ✅ MAJ bénéficiaire / passager (billet_avion + assurance)
-if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_ASSURANCE], true)) {
+if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_ASSURANCE, Reservation::TYPE_EVISA], true)) {
 
     $reservation->loadMissing('client', 'participants', 'passenger');
 
-    $role = $finalType === Reservation::TYPE_ASSURANCE ? 'beneficiary' : 'passenger';
+    $role = match ($finalType) {
+        Reservation::TYPE_ASSURANCE => 'beneficiary',
+        Reservation::TYPE_EVISA     => 'demandeur',
+        default                     => 'passenger',
+    };
 
     $wantsPassengerUpdate =
         array_key_exists('passenger_id', $data) ||
@@ -655,7 +809,7 @@ if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_ASSU
 }
 
 // ✅ MAJ multi-passagers (billet_avion)
-if ($finalType === Reservation::TYPE_BILLET_AVION && array_key_exists('passengers', $data)) {
+if (in_array($finalType, [Reservation::TYPE_BILLET_AVION, Reservation::TYPE_EVISA], true) && array_key_exists('passengers', $data)) {
 
     $incoming = is_array($data['passengers']) ? $data['passengers'] : [];
 
@@ -702,6 +856,7 @@ if ($finalType === Reservation::TYPE_BILLET_AVION && array_key_exists('passenger
         'passenger',
         'flightDetails',
         'assuranceDetails',
+        'evisaDetails',
         'factures.paiements'
     ]);
 }
@@ -732,6 +887,8 @@ if ($finalType === Reservation::TYPE_BILLET_AVION && array_key_exists('passenger
         // 2) garantir facture émise
         $facture = $this->ensureFactureEmise($reservation);
 
+        // Note : la notification "reservation_confirmed" est gérée par ReservationObserver (détecte changement de statut)
+
         return response()->json([
             'reservation' => $reservation->fresh()->load(['client','produit','forfait','participants','factures.paiements']),
             'facture' => $facture->fresh()->load(['paiements']),
@@ -753,25 +910,37 @@ private function makeReservationReference(array $data, string $type): string
         if ($pnr !== '') {
             return $this->ensureUniqueReference(Str::upper($pnr));
         }
-
-        // Sinon génération "pro"
-        $date = now()->format('Ymd');
-        $rand = Str::upper(Str::random(6));
-        return $this->ensureUniqueReference("UT-AV-{$date}-{$rand}");
     }
 
-    // 3) Autres types
-    $date = now()->format('Ymd');
+    // 3) Génération format Option A : UT-{TYPE}-{YYMMDD}-{NNN}
+    //    NNN = séquence quotidienne par type (remise à 0 chaque jour)
     $typeCode = match ($type) {
-        \App\Models\Reservation::TYPE_HOTEL => 'HOT',
-        \App\Models\Reservation::TYPE_VOITURE => 'CAR',
-        \App\Models\Reservation::TYPE_EVENEMENT => 'EVT',
-        \App\Models\Reservation::TYPE_FORFAIT => 'PKG',
-        default => 'RES',
+        \App\Models\Reservation::TYPE_BILLET_AVION => 'AV',
+        \App\Models\Reservation::TYPE_HOTEL        => 'HOT',
+        \App\Models\Reservation::TYPE_VOITURE      => 'CAR',
+        \App\Models\Reservation::TYPE_EVENEMENT    => 'EVT',
+        \App\Models\Reservation::TYPE_FORFAIT      => 'PKG',
+        \App\Models\Reservation::TYPE_ASSURANCE    => 'ASS',
+        \App\Models\Reservation::TYPE_EVISA        => 'EVS',
+        default                                    => 'RES',
     };
 
-    $rand = Str::upper(Str::random(6));
-    return $this->ensureUniqueReference("UT-{$typeCode}-{$date}-{$rand}");
+    $dateShort = now()->format('ymd'); // YYMMDD
+    $prefix    = "UT-{$typeCode}-{$dateShort}-";
+
+    // Détermine la prochaine séquence du jour pour ce type
+    $lastRef = \App\Models\Reservation::query()
+        ->where('reference', 'like', $prefix . '%')
+        ->orderByDesc('reference')
+        ->value('reference');
+
+    $next = 1;
+    if ($lastRef && preg_match('/-(\d{3,})$/', $lastRef, $m)) {
+        $next = (int) $m[1] + 1;
+    }
+
+    $ref = $prefix . str_pad((string) $next, 3, '0', STR_PAD_LEFT);
+    return $this->ensureUniqueReference($ref);
 }
 
 private function ensureUniqueReference(string $ref): string
@@ -790,13 +959,11 @@ private function ensureUniqueReference(string $ref): string
 
     public function annuler(Request $request, Reservation $reservation)
 {
-    // On annule uniquement si en_attente (par défaut)
-    if ($reservation->statut !== Reservation::STATUT_EN_ATTENTE) {
+    // Annulation possible depuis en_attente OU confirmee (pas si déjà annulée)
+    if ($reservation->statut === Reservation::STATUT_ANNULE) {
         return response()->json([
-            'message' => "Impossible d'annuler une réservation au statut '{$reservation->statut}'.",
-            'errors' => [
-                'statut' => ["Seules les réservations en_attente peuvent être annulées."]
-            ],
+            'message' => "Cette réservation est déjà annulée.",
+            'errors'  => ['statut' => ["Réservation déjà annulée."]],
         ], 422);
     }
 
@@ -808,10 +975,59 @@ private function ensureUniqueReference(string $ref): string
         // 'notes' => trim(($reservation->notes ?? '')."\nAnnulation: ".$request->input('motif')) ?: $reservation->notes,
     ]);
 
+    // Note : la notification "reservation_cancelled" est gérée par ReservationObserver
+
     return response()->json(
         $reservation->load(['client', 'produit', 'forfait', 'participants', 'flightDetails']),
         Response::HTTP_OK
     );
+}
+
+/**
+ * POST /reservations/{reservation}/encaisser
+ * Enregistre un paiement en 1 seul appel (crée/émet la facture si besoin).
+ */
+public function encaisser(Request $request, Reservation $reservation)
+{
+    $data = $request->validate([
+        'montant'        => 'required|numeric|min:0.01',
+        'mode_paiement'  => 'required|string|max:50',
+        'reference'      => 'nullable|string|max:255',
+        'notes'          => 'nullable|string|max:500',
+        'date_paiement'  => 'nullable|date',
+    ]);
+
+    return DB::transaction(function () use ($data, $reservation) {
+
+        // 1) Garantir une facture émise
+        $facture = $this->ensureFactureEmise($reservation);
+
+        // 2) Créer le paiement
+        $paiement = $facture->paiements()->create([
+            'montant'        => $data['montant'],
+            'mode_paiement'  => $data['mode_paiement'],
+            'reference'      => $data['reference'] ?? null,
+            'notes'          => $data['notes'] ?? null,
+            'date_paiement'  => $data['date_paiement'] ?? now()->toDateString(),
+            'statut'         => 'recu',
+        ]);
+
+        // 3) Retourner la réservation fraîche avec tout le nécessaire
+        return response()->json(
+            $reservation->fresh()->load([
+                'client',
+                'produit',
+                'forfait',
+                'participants',
+                'passenger',
+                'flightDetails',
+                'assuranceDetails',
+                'evisaDetails',
+                'factures.paiements',
+            ]),
+            Response::HTTP_CREATED
+        );
+    });
 }
 
  private function ensureFactureEmise(Reservation $reservation): Facture
@@ -839,28 +1055,217 @@ private function ensureUniqueReference(string $ref): string
     return $facture;
 }
 
+public function export(Request $request)
+{
+    $month = $request->filled('month') ? $request->get('month') : now()->format('Y-m');
+    $filename = 'reservations-' . $month . '.xlsx';
+    return Excel::download(new ReservationsExport($request), $filename);
+}
+
 public function devisPdf(Reservation $reservation)
 {
-    $reservation->load(['client', 'produit', 'forfait', 'participants', 'flightDetails']);
+    $reservation->load([
+        'client',
+        'produit',
+        'forfait',
+        'participants',
+        'flightDetails',
+        'assuranceDetails',
+        'evisaDetails',
+        'factures.paiements',
+    ]);
 
     $devis = [
-        'numero' => 'DEV-' . str_pad((string) $reservation->id, 6, '0', STR_PAD_LEFT),
-        'date' => now()->toDateString(),
-        'validite' => now()->addDays(7)->toDateString(), // 7 jours (modifiable)
-        'echeance' => 'Règlement immédiat', // comme ta facture actuelle :contentReference[oaicite:6]{index=6}
-        'tva' => 0,
+        'numero'   => 'DEV-' . str_pad((string) $reservation->id, 6, '0', STR_PAD_LEFT),
+        'date'     => now()->toDateString(),
+        'validite' => now()->addDays(7)->toDateString(),
     ];
 
-    // Montants : on colle à ton UI facture qui affiche montant_total partout :contentReference[oaicite:7]{index=7}
     $montantTotal = (float) ($reservation->montant_total ?? 0);
 
+    // Calcul paiement depuis la dernière facture émise
+    $facture = $reservation->factures->where('statut', '!=', 'annulee')->sortByDesc('id')->first();
+    $paid      = 0;
+    $remaining = $montantTotal;
+    $payLabel  = 'NON PAYÉ';
+    $payPercent = 0;
+
+    if ($facture) {
+        $paid = (float) $facture->paiements->where('statut', 'recu')->sum('montant');
+        $paid = max(0, min($paid, $montantTotal));
+        $remaining  = max(0, $montantTotal - $paid);
+        $payPercent = $montantTotal > 0 ? (int) round(($paid / $montantTotal) * 100) : 0;
+        if ($paid <= 0)                    $payLabel = 'NON PAYÉ';
+        elseif ($paid + 0.001 < $montantTotal) $payLabel = 'PARTIELLEMENT PAYÉ';
+        else                               $payLabel = 'PAYÉ';
+    }
+
+    $pay = [
+        'label'     => $payLabel,
+        'paid'      => $paid,
+        'remaining' => $remaining,
+        'percent'   => $payPercent,
+    ];
+
+    $logoPath = public_path('logo.png');
+    if (!file_exists($logoPath)) $logoPath = null;
+
     $pdf = Pdf::loadView('devis', [
-        'reservation' => $reservation,
-        'devis' => $devis,
+        'reservation'  => $reservation,
+        'devis'        => $devis,
         'montant_total' => $montantTotal,
+        'pay'          => $pay,
+        'logoPath'     => $logoPath,
     ])->setPaper('a4');
 
     return $pdf->stream("devis-{$devis['numero']}.pdf");
+}
+
+/**
+ * GET /reservations/{reservation}/penalites
+ * Liste toutes les pénalités d'une réservation.
+ */
+public function penaliteIndex(Reservation $reservation)
+{
+    $penalites = $reservation->penalites()
+        ->with(['imposedBy:id,prenom,nom,email', 'avoir', 'facture'])
+        ->get();
+
+    return response()->json($penalites);
+}
+
+/**
+ * POST /reservations/{reservation}/penalize
+ * Applique une pénalité avec traitement automatique (avoir / facture / retenu)
+ * et optionnellement annule la réservation en même temps.
+ *
+ * Body :
+ *  - type           : annulation | modification | no_show | autre
+ *  - montant        : required, > 0
+ *  - motif          : optional
+ *  - traitement     : deduit_avoir | facture_separee | retenu_paiement
+ *  - cancel         : bool (si true, passe statut → annulee)
+ */
+public function penalize(Request $request, Reservation $reservation)
+{
+    $data = $request->validate([
+        'type'       => ['required', 'in:annulation,modification,no_show,autre'],
+        'montant'    => ['required', 'numeric', 'min:0.01'],
+        'motif'      => ['nullable', 'string', 'max:500'],
+        'traitement' => ['required', 'in:deduit_avoir,facture_separee,retenu_paiement'],
+        'cancel'     => ['sometimes', 'boolean'],
+    ]);
+
+    return DB::transaction(function () use ($data, $reservation, $request) {
+
+        $penaliteMontant = (float) $data['montant'];
+        $clientId        = $reservation->client_id;
+        $userId          = optional($request->user())->id;
+
+        // ── Traitement selon le mode ────────────────────────────────────────
+        $avoirId = null;
+        $factureId = null;
+
+        if ($data['traitement'] === \App\Models\ReservationPenalite::TRAITEMENT_DEDUIT_AVOIR) {
+            // Calcule le montant payé via les factures de la réservation
+            $paid = (float) \DB::table('paiements')
+                ->whereIn('facture_id', $reservation->factures()->pluck('id'))
+                ->where('statut', 'recu')
+                ->sum('montant');
+
+            $remboursement = max(0, $paid - $penaliteMontant);
+
+            // Crée un avoir client si remboursement > 0
+            if ($remboursement > 0 && $clientId) {
+                $solde = \App\Models\ClientAvoir::soldeForClient((int) $clientId);
+                $newSolde = $solde + $remboursement;
+
+                $avoir = \App\Models\ClientAvoir::create([
+                    'client_id'   => $clientId,
+                    'user_id'     => $userId,
+                    'type'        => 'depot',
+                    'montant'     => $remboursement,
+                    'solde_apres' => $newSolde,
+                    'reference'   => 'PEN-' . $reservation->id . '-' . now()->format('Ymd'),
+                    'notes'       => "Remboursement après pénalité sur réservation {$reservation->reference}",
+                    'date_avoir'  => now()->toDateString(),
+                ]);
+                $avoirId = $avoir->id;
+            }
+        }
+        elseif ($data['traitement'] === \App\Models\ReservationPenalite::TRAITEMENT_FACTURE_SEPAREE) {
+            // Crée une nouvelle facture distincte pour la pénalité
+            $numero = 'PEN-' . $reservation->id . '-' . now()->format('YmdHis');
+            $facture = \App\Models\Facture::create([
+                'reservation_id' => $reservation->id,
+                'numero'         => $numero,
+                'date_facture'   => now()->toDateString(),
+                'date_echeance'  => now()->addDays(15)->toDateString(),
+                'montant_ht'     => $penaliteMontant,
+                'montant_tva'    => 0,
+                'montant_total'  => $penaliteMontant,
+                'devise'         => $reservation->devise ?? 'XOF',
+                'statut'         => 'emis',
+                'notes'          => 'Facture de pénalité — ' . ($data['motif'] ?? $data['type']),
+            ]);
+            $factureId = $facture->id;
+        }
+        // retenu_paiement : aucune action complémentaire (la pénalité est juste enregistrée)
+
+        // ── Création de la pénalité ─────────────────────────────────────────
+        $penalite = \App\Models\ReservationPenalite::create([
+            'reservation_id'     => $reservation->id,
+            'imposed_by_user_id' => $userId,
+            'avoir_id'           => $avoirId,
+            'facture_id'         => $factureId,
+            'type'               => $data['type'],
+            'traitement'         => $data['traitement'],
+            'montant'            => $penaliteMontant,
+            'motif'              => $data['motif'] ?? null,
+            'imposed_at'         => now(),
+        ]);
+
+        // ── Annulation optionnelle ──────────────────────────────────────────
+        if (!empty($data['cancel']) && $reservation->statut !== Reservation::STATUT_ANNULE) {
+            $reservation->update(['statut' => Reservation::STATUT_ANNULE]);
+            // L'observer s'occupe de la notif "reservation_cancelled"
+        }
+
+        // ── Notification aux admins ─────────────────────────────────────────
+        $clientLabel = trim((optional($reservation->client)->prenom ?? '') . ' ' . (optional($reservation->client)->nom ?? ''));
+        $montantFmt = number_format($penaliteMontant, 0, ',', ' ') . ' ' . ($reservation->devise ?? 'XOF');
+        \App\Services\NotificationService::notifyAll(
+            type:  'penalty_applied',
+            title: "Pénalité appliquée · {$montantFmt}",
+            body:  "Réservation {$reservation->reference}" . ($clientLabel ? " · {$clientLabel}" : ''),
+            url:   "/reservations/{$reservation->id}",
+            data:  ['reservation_id' => $reservation->id, 'penalite_id' => $penalite->id],
+        );
+
+        return response()->json([
+            'message'   => 'Pénalité appliquée avec succès.',
+            'penalite'  => $penalite->load(['imposedBy:id,prenom,nom', 'avoir', 'facture']),
+            'reservation' => $reservation->fresh()->load(['client', 'penalites.imposedBy:id,prenom,nom', 'penalites.avoir', 'penalites.facture']),
+        ], Response::HTTP_CREATED);
+    });
+}
+
+/**
+ * DELETE /penalites/{penalite}
+ * Supprime une pénalité (admin only). Ne défait PAS l'avoir/facture associé(e)
+ * — l'admin doit faire ça manuellement s'il veut tout annuler.
+ */
+public function penaliteDestroy(Request $request, \App\Models\ReservationPenalite $penalite)
+{
+    $user = $request->user();
+    if (!$user || strtolower((string) $user->role) !== 'admin') {
+        return response()->json(['message' => 'Action réservée aux administrateurs.'], 403);
+    }
+
+    $reservationId = $penalite->reservation_id;
+    $penalite->delete();
+
+    return response()->json(['message' => 'Pénalité supprimée.', 'reservation_id' => $reservationId]);
 }
 
 }

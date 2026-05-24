@@ -113,27 +113,94 @@ class DashboardController extends Controller
             ->limit(6)
             ->get();
 
+        // -----------------------------
+        // Répartition par type (12 derniers mois)
+        // -----------------------------
+        $typeLabels = [
+            'billet_avion' => "Billet d'avion",
+            'hotel'        => 'Hôtel',
+            'voiture'      => 'Voiture',
+            'evenement'    => 'Événement',
+            'forfait'      => 'Forfait',
+            'assurance'    => 'Assurance',
+            'evisa'        => 'E-Visa',
+        ];
+
+        $repartitionRaw = Reservation::query()
+            ->selectRaw('type, COUNT(*) as total')
+            ->where('created_at', '>=', $today->copy()->subMonths(12)->startOfDay())
+            ->groupBy('type')
+            ->orderByDesc('total')
+            ->get();
+
+        $repartitionParType = $repartitionRaw->map(fn($r) => [
+            'type'  => $r->type,
+            'label' => $typeLabels[$r->type] ?? ucfirst($r->type),
+            'value' => (int) $r->total,
+        ])->values()->all();
+
+        // -----------------------------
+        // CA mensuel sur 12 mois
+        // -----------------------------
+        $ca12Raw = Facture::query()
+            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as mois, SUM(COALESCE(montant_total, 0)) as ca")
+            ->where('statut', 'payee')
+            ->where('created_at', '>=', $today->copy()->subMonths(11)->startOfMonth()->startOfDay())
+            ->groupBy('mois')
+            ->orderBy('mois')
+            ->get()
+            ->keyBy('mois');
+
+        $ca12Mois = [];
+        for ($i = 11; $i >= 0; $i--) {
+            $m   = $today->copy()->subMonths($i);
+            $key = $m->format('Y-m');
+            $ca12Mois[] = [
+                'mois'  => $key,
+                'label' => $m->translatedFormat('M y'),
+                'value' => (float) optional($ca12Raw->get($key))->ca,
+            ];
+        }
+
+        // -----------------------------
+        // Top 5 clients par CA
+        // -----------------------------
+        $topClients = Client::query()
+            ->select('clients.id', 'clients.nom', 'clients.prenom', 'clients.email')
+            ->selectRaw('COUNT(r.id) as nb_reservations')
+            ->selectRaw('SUM(COALESCE(r.montant_total, 0)) as ca_total')
+            ->join('reservations as r', 'r.client_id', '=', 'clients.id')
+            ->groupBy('clients.id', 'clients.nom', 'clients.prenom', 'clients.email')
+            ->orderByDesc('ca_total')
+            ->limit(5)
+            ->get();
+
         return response()->json([
             'kpis' => [
-                'reservations_7d' => $reservations7d,
-                'ca_month' => $caMonth,
-                'follow_count' => $followCount,
-                'clients_total' => $clientsTotal,
-                'new_clients_month' => $newClientsMonth,
+                'reservations_7d'    => $reservations7d,
+                'ca_month'           => $caMonth,
+                'follow_count'       => $followCount,
+                'clients_total'      => $clientsTotal,
+                'new_clients_month'  => $newClientsMonth,
                 'range' => [
-                    'start7' => $start7->toDateString(),
-                    'start30' => $start30->toDateString(),
+                    'start7'     => $start7->toDateString(),
+                    'start30'    => $start30->toDateString(),
                     'monthStart' => $monthStart->toDateString(),
-                    'monthEnd' => $monthEnd->toDateString(),
+                    'monthEnd'   => $monthEnd->toDateString(),
                 ],
             ],
             'series' => [
                 'reservations_7d' => $reservationsChart7d,
-                'ca_30d' => $caChart30d,
+                'ca_30d'          => $caChart30d,
+                'ca_12_mois'      => $ca12Mois,
+            ],
+            'charts' => [
+                'repartition_par_type' => $repartitionParType,
             ],
             'lists' => [
                 'last_reservations' => $lastReservations,
-                'factures_follow' => $facturesToFollow,
+                'factures_follow'   => $facturesToFollow,
+                'top_clients'       => $topClients,
             ],
         ]);
     }

@@ -17,7 +17,7 @@ class StoreReservationRequest extends FormRequest
     {
         return [
             /* ================= TYPE ================= */
-            'type' => 'required|in:billet_avion,hotel,voiture,evenement,forfait,assurance',
+            'type' => 'required|in:billet_avion,hotel,voiture,evenement,forfait,assurance,evisa',
 
             /* ================= CLIENT ================= */
             'client_id' => 'nullable|exists:clients,id',
@@ -88,6 +88,13 @@ class StoreReservationRequest extends FormRequest
             'assurance_details.libelle' => ['required_if:type,assurance', 'string', 'max:255'],
             'assurance_details.date_debut' => ['required_if:type,assurance', 'date'],
             'assurance_details.date_fin' => ['nullable', 'date', 'after_or_equal:assurance_details.date_debut'],
+
+            // E-Visa details (conditionnel)
+            'evisa_details' => ['required_if:type,evisa', 'array'],
+            'evisa_details.pays_destination' => ['required_if:type,evisa', 'string', 'max:150'],
+            'evisa_details.type_visa'        => ['nullable', 'string', 'max:50'],
+            'evisa_details.date_voyage'      => ['nullable', 'date'],
+            'evisa_details.duree_sejour'     => ['nullable', 'string', 'max:100'],
         ];
     }
 
@@ -149,6 +156,20 @@ class StoreReservationRequest extends FormRequest
             }
             if ($this->filled('forfait_id')) {
                 $v->errors()->add('forfait_id', "Une assurance ne doit pas être liée à un forfait.");
+            }
+        }
+
+        if ($type === Reservation::TYPE_EVISA) {
+            if ($this->filled('produit_id')) {
+                $v->errors()->add('produit_id', "Un e-visa ne nécessite pas de produit.");
+            }
+            if ($this->filled('forfait_id')) {
+                $v->errors()->add('forfait_id', "Un e-visa ne doit pas être lié à un forfait.");
+            }
+
+            $ed = $this->input('evisa_details');
+            if (empty($ed['pays_destination'])) {
+                $v->errors()->add('evisa_details.pays_destination', "Le pays de destination est obligatoire pour un e-visa.");
             }
         }
 

@@ -2,24 +2,26 @@
 
 namespace App\Models;
 
+use App\Traits\LogsActivity;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
 class Facture extends Model
 {
-    use HasFactory;
+    use HasFactory, LogsActivity;
 
     protected $fillable = [
-     'reservation_id',
-    'numero',
-    'date_facture',
-    'montant_sous_total',
-    'montant_taxes',
-    'montant_total',
-    'statut',
-    'pdf_path',
-];
+        'reservation_id',
+        'numero',
+        'date_facture',
+        'due_date',
+        'montant_sous_total',
+        'montant_taxes',
+        'montant_total',
+        'statut',
+        'pdf_path',
+    ];
 
 
     protected $casts = [

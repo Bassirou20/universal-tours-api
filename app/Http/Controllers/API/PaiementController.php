@@ -5,12 +5,46 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Facture;
 use App\Models\Paiement;
+use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
 
 class PaiementController extends Controller
 {
+    public function index(Request $request)
+    {
+        $query = Paiement::with(['facture.reservation.client'])
+            ->orderByDesc('date_paiement')
+            ->orderByDesc('created_at');
+
+        if ($request->filled('statut')) {
+            $query->where('statut', $request->get('statut'));
+        }
+        if ($request->filled('mode_paiement')) {
+            $query->where('mode_paiement', $request->get('mode_paiement'));
+        }
+        if ($request->filled('facture_id')) {
+            $query->where('facture_id', $request->get('facture_id'));
+        }
+        if ($request->filled('date_from')) {
+            $query->whereDate('date_paiement', '>=', $request->get('date_from'));
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('date_paiement', '<=', $request->get('date_to'));
+        }
+        if ($request->filled('search')) {
+            $term = $request->get('search');
+            $query->where(function ($q) use ($term) {
+                $q->where('reference', 'like', "%{$term}%")
+                  ->orWhere('id', $term);
+            });
+        }
+
+        $perPage = min((int) ($request->get('per_page', 50)), 200);
+        return response()->json($query->paginate($perPage));
+    }
+
     public function store(Request $request, Facture $facture)
     {
         $data = $request->validate([
@@ -59,8 +93,37 @@ class PaiementController extends Controller
                 $newStatus = 'paye_partiellement';
             }
 
+            $previousStatus = $facture->statut;
             if ($facture->statut !== 'annule') {
                 $facture->update(['statut' => $newStatus]);
+            }
+
+            // 🔔 Notifications
+            $reservation = $facture->reservation;
+            $clientName = trim((optional($reservation?->client)->prenom ?? '') . ' ' . (optional($reservation?->client)->nom ?? ''));
+            $factureRef = $facture->numero ?? $facture->reference ?? ('#' . $facture->id);
+            $devise = $facture->devise ?? 'XOF';
+            $montantFmt = number_format((float)$data['montant'], 0, ',', ' ') . ' ' . $devise;
+            $url = $reservation ? "/reservations/{$reservation->id}" : "/factures";
+
+            // Paiement reçu (toujours)
+            NotificationService::notifyAll(
+                type:  'payment_received',
+                title: "Paiement reçu · {$montantFmt}",
+                body:  "Facture {$factureRef}" . ($clientName ? " · {$clientName}" : ''),
+                url:   $url,
+                data:  ['facture_id' => $facture->id, 'paiement_id' => $paiement->id],
+            );
+
+            // Facture entièrement payée (uniquement à la transition)
+            if ($newStatus === 'paye_totalement' && $previousStatus !== 'paye_totalement') {
+                NotificationService::notifyAll(
+                    type:  'invoice_paid',
+                    title: "Facture entièrement payée · {$factureRef}",
+                    body:  $clientName ?: null,
+                    url:   $url,
+                    data:  ['facture_id' => $facture->id],
+                );
             }
 
             return response()->json([

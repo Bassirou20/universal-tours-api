@@ -12,7 +12,15 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+        // Scan des factures impayées échues — chaque jour à 09h00
+        $schedule->command('notifications:scan-overdue --days=7')
+            ->dailyAt('09:00')
+            ->withoutOverlapping();
+
+        // Récap quotidien — chaque jour à 19h00
+        $schedule->command('notifications:daily-summary')
+            ->dailyAt('19:00')
+            ->withoutOverlapping();
     }
 
     /**

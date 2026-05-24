@@ -71,7 +71,10 @@ class ClientController extends Controller
             'produit',
             'forfait',
             'participants',
-            'facture.paiements',
+            'flightDetails',
+            'assuranceDetails',
+            'evisaDetails',
+            'factures.paiements',
         ])
         ->orderByDesc('created_at');
 

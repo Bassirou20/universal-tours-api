@@ -96,6 +96,9 @@ class AvoirController extends Controller
                 $soldeApres = $soldeCourant + (float) $data['montant'];
             }
 
+            $prefix = $data['type'] === 'depot' ? 'AV-DEP' : 'AV-UTL';
+            $autoRef = $prefix . '-' . now()->format('ymd') . '-' . strtoupper(substr(uniqid(), -4));
+
             $avoir = ClientAvoir::create([
                 'client_id'  => $clientId,
                 'user_id'    => $request->user()?->id,
@@ -103,7 +106,7 @@ class AvoirController extends Controller
                 'type'       => $data['type'],
                 'montant'    => (float) $data['montant'],
                 'solde_apres'=> $soldeApres,
-                'reference'  => $data['reference'] ?? null,
+                'reference'  => !empty($data['reference']) ? $data['reference'] : $autoRef,
                 'notes'      => $data['notes'] ?? null,
                 'date_avoir' => $data['date_avoir'] ?? now()->toDateString(),
             ]);

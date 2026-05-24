@@ -35,6 +35,9 @@ class UpdateReservationRequest extends FormRequest
             'participants.*.nom' => ['required_with:participants', 'string', 'max:100'],
             'participants.*.prenom' => ['nullable', 'string', 'max:100'],
             'participants.*.age' => ['nullable', 'integer', 'min:0', 'max:120'],
+            'participants.*.passport' => ['nullable', 'string', 'max:80'],
+            'participants.*.remarques' => ['nullable', 'string', 'max:500'],
+            'participants.*.role' => ['nullable', 'string', 'max:50'],
 
             // Passager / bénéficiaire (UPDATE)
             'passenger_is_client' => ['sometimes', 'boolean'],
@@ -46,6 +49,13 @@ class UpdateReservationRequest extends FormRequest
             'passenger.prenom' => ['nullable', 'string', 'max:100'],
             'passenger.passport' => ['nullable', 'string', 'max:80'],
             'passenger.sexe' => ['nullable', 'in:M,F'],
+
+            // ✅ Passagers multiples billet avion (manquait → était ignoré par validated())
+            'passengers' => ['sometimes', 'array'],
+            'passengers.*.nom' => ['required_with:passengers', 'string', 'max:100'],
+            'passengers.*.prenom' => ['nullable', 'string', 'max:100'],
+            'passengers.*.passport' => ['nullable', 'string', 'max:80'],
+            'passengers.*.sexe' => ['nullable', 'in:M,F'],
 
             // ✅ Champs vol (root) - tous optionnels + NULLABLE
             'ville_depart'  => ['sometimes', 'nullable', 'string', 'max:100'],
@@ -68,8 +78,15 @@ class UpdateReservationRequest extends FormRequest
             // Assurance details (conditionnel)
             'assurance_details' => ['sometimes', 'array'],
             'assurance_details.libelle' => ['required_with:assurance_details', 'string', 'max:255'],
-            'assurance_details.date_debut' => ['sometimes','nullable' , 'date'],
-            'assurance_details.date_fin' => ['sometimes','nullable', 'date'],
+            'assurance_details.date_debut' => ['sometimes', 'nullable', 'date'],
+            'assurance_details.date_fin' => ['sometimes', 'nullable', 'date'],
+
+            // E-Visa details (conditionnel)
+            'evisa_details' => ['sometimes', 'array'],
+            'evisa_details.pays_destination' => ['sometimes', 'nullable', 'string', 'max:150'],
+            'evisa_details.type_visa'        => ['sometimes', 'nullable', 'string', 'max:50'],
+            'evisa_details.date_voyage'      => ['sometimes', 'nullable', 'date'],
+            'evisa_details.duree_sejour'     => ['sometimes', 'nullable', 'string', 'max:100'],
         ];
     }
 
@@ -165,12 +182,24 @@ class UpdateReservationRequest extends FormRequest
             // 3) ASSURANCE
             // -----------------------------
             if ($finalType === Reservation::TYPE_ASSURANCE) {
-                // produit/forfait interdits
                 if (!is_null($finalProduitId)) {
                     $v->errors()->add('produit_id', "Une assurance ne doit pas être liée à un produit.");
                 }
                 if (!is_null($finalForfaitId)) {
                     $v->errors()->add('forfait_id', "Une assurance ne doit pas être liée à un forfait.");
+                }
+                return;
+            }
+
+            // -----------------------------
+            // 4) E-VISA
+            // -----------------------------
+            if ($finalType === Reservation::TYPE_EVISA) {
+                if (!is_null($finalProduitId)) {
+                    $v->errors()->add('produit_id', "Un e-visa ne doit pas être lié à un produit.");
+                }
+                if (!is_null($finalForfaitId)) {
+                    $v->errors()->add('forfait_id', "Un e-visa ne doit pas être lié à un forfait.");
                 }
                 return;
             }

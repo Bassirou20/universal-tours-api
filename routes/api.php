@@ -13,7 +13,10 @@ use App\Http\Controllers\API\ForfaitController;
 use App\Http\Controllers\API\PaiementController;
 use App\Http\Controllers\API\FournisseurController;
 use App\Http\Controllers\API\UserController;
+use App\Http\Controllers\API\ActivityLogController;
 use App\Http\Controllers\API\AvoirController;
+use App\Http\Controllers\API\NotificationController;
+use App\Http\Controllers\API\AccessRequestController;
 
 // =========================
 // Public
@@ -21,6 +24,9 @@ use App\Http\Controllers\API\AvoirController;
 Route::post('login', [AuthController::class, 'login']);
 Route::post('password/forget', [AuthController::class, 'sendResetLink']);
 Route::post('password/reset', [AuthController::class, 'resetPassword']);
+
+// Demande d'accès depuis la landing page (rate-limited par IP côté controller)
+Route::post('access-requests', [AccessRequestController::class, 'store']);
 
 // ⚠️ refresh devrait être dans auth:sanctum (sinon $request->user() = null)
 Route::middleware(['auth:sanctum'])->post('refresh', [AuthController::class, 'refresh']);
@@ -34,6 +40,20 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // session user
     Route::get('me', [AuthController::class, 'me']);
     Route::post('logout', [AuthController::class, 'logout']);
+    Route::post('password/change', [AuthController::class, 'changePassword']);
+    Route::put('profile', [AuthController::class, 'updateProfile']);
+
+    // Sessions actives (Phase 3 sécurité)
+    Route::get('me/sessions',          [AuthController::class, 'sessions']);
+    Route::delete('me/sessions/{id}',  [AuthController::class, 'revokeSession']);
+    Route::delete('me/sessions',       [AuthController::class, 'revokeAllOtherSessions']);
+
+    // Notifications (in-app)
+    Route::get('notifications',                   [NotificationController::class, 'index']);
+    Route::get('notifications/unread-count',      [NotificationController::class, 'unreadCount']);
+    Route::post('notifications/{id}/read',        [NotificationController::class, 'markAsRead']);
+    Route::post('notifications/mark-all-read',    [NotificationController::class, 'markAllAsRead']);
+    Route::delete('notifications/{id}',           [NotificationController::class, 'destroy']);
 
     // Clients
     Route::apiResource('clients', ClientController::class);
@@ -51,13 +71,21 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::apiResource('forfaits', ForfaitController::class);
 
     // Réservations
+    Route::get('reservations/export', [ReservationController::class, 'export']);
     Route::apiResource('reservations', ReservationController::class);
     Route::post('reservations/{reservation}/confirmer', [ReservationController::class, 'confirmer']);
     Route::post('reservations/{reservation}/annuler', [ReservationController::class, 'annuler']);
+    Route::post('reservations/{reservation}/encaisser', [ReservationController::class, 'encaisser']);
+
+    // Pénalités sur réservations (Phase 2 Niveau 2)
+    Route::get('reservations/{reservation}/penalites',  [ReservationController::class, 'penaliteIndex']);
+    Route::post('reservations/{reservation}/penalize',  [ReservationController::class, 'penalize']);
+    Route::delete('penalites/{penalite}',               [ReservationController::class, 'penaliteDestroy']);
     Route::get('reservations/{reservation}/devis-pdf', [ReservationController::class, 'devisPdf']);
 
     // Factures + PDF
     Route::get('factures', [FactureController::class, 'index']);
+    Route::post('factures', [FactureController::class, 'storeStandalone']);
     Route::get('factures/{facture}', [FactureController::class, 'show']);
     Route::post('reservations/{reservation}/factures', [FactureController::class, 'store']);
     Route::post('factures/{facture}/emettre', [FactureController::class, 'emettre']);
@@ -78,9 +106,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     // Paiements
     Route::get('dashboard', [DashboardController::class, 'index']);
-    Route::post('factures/{facture}/paiements', [PaiementController::class, 'store']);
-    Route::put('paiements/{paiement}',    [PaiementController::class, 'update']);
-    Route::delete('paiements/{paiement}', [PaiementController::class, 'destroy']);
+    Route::get('paiements',                        [PaiementController::class, 'index']);
+    Route::post('factures/{facture}/paiements',    [PaiementController::class, 'store']);
+    Route::put('paiements/{paiement}',             [PaiementController::class, 'update']);
+    Route::delete('paiements/{paiement}',          [PaiementController::class, 'destroy']);
 
     // =========================
     // Admin only
@@ -91,7 +120,14 @@ Route::middleware(['auth:sanctum'])->group(function () {
         Route::apiResource('fournisseurs', FournisseurController::class);
 
         // Users (admin-only CRUD)
+        Route::get('users/export',                 [UserController::class, 'export']);
+        Route::post('users/bulk',                  [UserController::class, 'bulk']);
         Route::apiResource('users', UserController::class);
+        Route::post('users/{user}/reset-password', [UserController::class, 'resetPassword']);
+        Route::get('users/{user}/stats',           [UserController::class, 'stats']);
+
+        // Logs d'activité
+        Route::get('activity-logs', [ActivityLogController::class, 'index']);
 
         // (Optionnel) si tu veux forcer Forfaits admin-only :
         // Route::apiResource('forfaits', ForfaitController::class);

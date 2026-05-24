@@ -22,11 +22,30 @@ class FactureController extends Controller
             ->orderByDesc('id');
 
         if ($s = $request->get('search')) {
-            $q->where('numero', 'like', "%$s%");
+            $q->where(function ($qq) use ($s) {
+                $qq->where('numero', 'like', "%$s%")
+                   ->orWhereHas('reservation', function ($r) use ($s) {
+                       $r->where('reference', 'like', "%$s%")
+                         ->orWhereHas('client', function ($c) use ($s) {
+                             $c->where('nom', 'like', "%$s%")
+                               ->orWhere('prenom', 'like', "%$s%")
+                               ->orWhere('email', 'like', "%$s%");
+                         });
+                   });
+            });
         }
 
         if ($st = $request->get('statut')) {
-            $q->where('statut', $st);
+            // Map UI statut to all DB equivalents (handles legacy values)
+            $variants = match ($st) {
+                'payee'     => ['payee', 'payée', 'paye_totalement'],
+                'partielle' => ['partielle', 'paye_partiellement'],
+                'impayee'   => ['impayee', 'impayée'],
+                'annule'    => ['annule', 'annulee', 'annulée'],
+                'emis'      => ['emis', 'emise'],
+                default     => [$st],
+            };
+            $q->whereIn('statut', $variants);
         }
 
         // ?follow=1 → factures impayées ou partiellement payées (vue "à suivre")
@@ -36,6 +55,18 @@ class FactureController extends Controller
 
         if ($clientId = $request->get('client_id')) {
             $q->whereHas('reservation', fn ($qq) => $qq->where('client_id', $clientId));
+        }
+
+        if ($reservationId = $request->get('reservation_id')) {
+            $q->where('reservation_id', $reservationId);
+        }
+
+        if ($dateFrom = $request->get('date_from')) {
+            $q->whereDate('date_facture', '>=', $dateFrom);
+        }
+
+        if ($dateTo = $request->get('date_to')) {
+            $q->whereDate('date_facture', '<=', $dateTo);
         }
 
         return $q->paginate($perPage);
@@ -61,6 +92,34 @@ class FactureController extends Controller
             $facture->toArray(),
             ['pay_meta' => $pay]
         ));
+    }
+
+    public function storeStandalone(Request $request)
+    {
+        $data = $request->validate([
+            'numero'         => 'required|string|max:100|unique:factures,numero',
+            'statut'         => 'nullable|in:impayee,emis,partielle,payee,annule,brouillon',
+            'total'          => 'required|numeric|min:0',
+            'due_date'       => 'nullable|date',
+            'reservation_id' => 'nullable|integer|exists:reservations,id',
+        ]);
+
+        $facture = Facture::create([
+            'numero'             => $data['numero'],
+            'statut'             => $data['statut'] ?? 'emis',
+            'montant_sous_total' => $data['total'],
+            'montant_taxes'      => 0,
+            'montant_total'      => $data['total'],
+            'date_facture'       => now()->toDateString(),
+            'due_date'           => $data['due_date'] ?? null,
+            'reservation_id'     => $data['reservation_id'] ?? null,
+            'pdf_path'           => null,
+        ]);
+
+        return response()->json(
+            $facture->load(['reservation.client', 'paiements']),
+            Response::HTTP_CREATED
+        );
     }
 
     public function store(Request $request, \App\Models\Reservation $reservation)
